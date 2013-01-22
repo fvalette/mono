@@ -10,7 +10,6 @@ namespace Mono.Audio {
 	internal
 #endif
 	abstract class AudioData {
-		protected const int buffer_size = 4096;
 		bool stopped;
 
 		public abstract int Channels {
@@ -170,7 +169,7 @@ namespace Mono.Audio {
 			while (!IsStopped && count >= 0){
 				// Copy one chunk from buffer
 				Buffer.BlockCopy(buffer, total_data_played, chunk_to_play, 0, chunk_size);
-				// play that chunk, !!! the size pass to alsa the number of fragment, a fragment is a sample per channel !!!
+				// play the chunk, !!! the size pass to alsa the number of fragment, a fragment is a sample per channel !!!
 				fragment_played = dev.PlaySample (chunk_to_play, chunk_size / (frame_divider * channels));
 
 				// If alsa played something, inc the total data played and dec the data to be played
@@ -271,7 +270,7 @@ namespace Mono.Audio {
 			while (!IsStopped && count >= 0){
 				// Copy one chunk from buffer
 				Buffer.BlockCopy(buffer, total_data_played, chunk_to_play, 0, chunk_size);
-				// play that chunk, !!! the size pass to alsa the number of fragment, a fragment is a sample per channel !!!
+				// play the chunk, !!! the size pass to alsa the number of fragment, a fragment is a sample per channel !!!
 				fragment_played = dev.PlaySample (chunk_to_play, chunk_size / (frame_divider * channels));
 				
 				// If alsa played something, inc the total data played and dec the data to be played
