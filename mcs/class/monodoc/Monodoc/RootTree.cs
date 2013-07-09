@@ -68,7 +68,7 @@ namespace Monodoc
 		{
 			string result = ".";
 			try {
-				result = Settings.Get ("docPath") ?? ".";
+				result = Config.Get ("docPath") ?? ".";
 			} catch {}
 
 			return result;
@@ -94,13 +94,18 @@ namespace Monodoc
 		{
 			IEnumerable<string> enumerable = Enumerable.Empty<string> ();
 			try {
-				string path = Settings.Get ("docExternalPath");
+				string path = Config.Get ("docExternalPath");
 				enumerable = enumerable.Concat (System.IO.Directory.EnumerateFiles (path, "*.source"));
 			}
 			catch {}
 
 			if (Directory.Exists ("/Library/Frameworks/Mono.framework/External/monodoc"))
 				enumerable = enumerable.Concat (Directory.EnumerateFiles ("/Library/Frameworks/Mono.framework/External/monodoc", "*.source"));
+
+			var windowsPath = Path.Combine (Environment.GetFolderPath (Environment.SpecialFolder.LocalApplicationData), "monodoc");
+			if (Directory.Exists (windowsPath))
+				enumerable = enumerable.Concat (Directory.EnumerateFiles (windowsPath, "*.source"));
+
 			return enumerable;
 		}
 
@@ -134,10 +139,10 @@ namespace Monodoc
 				hs.RootTree = rootTree;
 				rootTree.helpSources.Add (hs);
 				string epath = "extra-help-source-" + hs.Name;
-				Node hsn = rootTree.RootNode.CreateNode (hs.Name, "root:/" + epath);
+				Node hsn = rootTree.RootNode.CreateNode (hs.Name, RootNamespace + epath);
 				rootTree.nameToHelpSource [epath] = hs;
 				hsn.EnsureNodes ();
-				foreach (Node n in hs.Tree.RootNode.Nodes)
+				foreach (Node n in hs.Tree.RootNode.ChildNodes)
 					hsn.AddNode (n);
 			}
 
@@ -209,7 +214,7 @@ namespace Monodoc
 						Console.Error.WriteLine ("node `{0}' is not defined on the documentation map", path);
 						node2 = node;
 					}
-					foreach (Node current in helpSource.Tree.RootNode.Nodes) {
+					foreach (Node current in helpSource.Tree.RootNode.ChildNodes) {
 						node2.AddNode (current);
 					}
 					node2.Sort ();
@@ -224,7 +229,7 @@ namespace Monodoc
 			if (!node.Documented)
 			{
 				List<Node> list = new List<Node> ();
-				foreach (Node current in node.Nodes)
+				foreach (Node current in node.ChildNodes)
 				{
 					bool flag = RootTree.PurgeNode (current);
 					if (flag)
@@ -232,7 +237,7 @@ namespace Monodoc
 						list.Add (current);
 					}
 				}
-				result =  (node.Nodes.Count == list.Count);
+				result =  (node.ChildNodes.Count == list.Count);
 				foreach (Node current2 in list)
 				{
 					node.DeleteNode (current2);
@@ -327,7 +332,7 @@ namespace Monodoc
 					continue;
 				}
 				string name = e.InnerText;
-				Node orCreateNode = parent.GetOrCreateNode (label, "root:/" + name);
+				Node orCreateNode = parent.GetOrCreateNode (label, RootNamespace + name);
 				orCreateNode.EnsureNodes ();
 				this.nameToNode[name] = orCreateNode;
 				XmlNodeList xmlNodeList = xmlNode.SelectNodes ("./node");
@@ -340,9 +345,8 @@ namespace Monodoc
 		public Node LookupEntryPoint (string name)
 		{
 			Node result = null;
-			if (!this.nameToNode.TryGetValue (name, out result)) {
+			if (!this.nameToNode.TryGetValue (name, out result))
 				result = null;
-			}
 			return result;
 		}
 
@@ -356,34 +360,45 @@ namespace Monodoc
 		{
 			node = null;
 			string internalId = null;
-			HelpSource hs = GetHelpSourceAndIdForUrl (url, hintSource, out internalId, out node);
-			return generator.Generate (hs, internalId);
+			Dictionary<string, string> context = null;
+			HelpSource hs = GetHelpSourceAndIdForUrl (url, hintSource, out internalId, out context, out node);
+			return generator.Generate (hs, internalId, context);
 		}
 
-		public HelpSource GetHelpSourceAndIdForUrl (string url, out string internalId)
+		public HelpSource GetHelpSourceAndIdForUrl (string url, out string internalId, out Dictionary<string, string> context)
 		{
 			Node dummy;
-			return GetHelpSourceAndIdForUrl (url, out internalId, out dummy);
+			return GetHelpSourceAndIdForUrl (url, out internalId, out context, out dummy);
 		}
 
-		public HelpSource GetHelpSourceAndIdForUrl (string url, out string internalId, out Node node)
+		public HelpSource GetHelpSourceAndIdForUrl (string url, out string internalId, out Dictionary<string, string> context, out Node node)
 		{
-			return GetHelpSourceAndIdForUrl (url, null, out internalId, out node);
+			return GetHelpSourceAndIdForUrl (url, null, out internalId, out context, out node);
 		}
 
-		public HelpSource GetHelpSourceAndIdForUrl (string url, HelpSource hintSource, out string internalId, out Node node)
+		public HelpSource GetHelpSourceAndIdForUrl (string url, HelpSource hintSource, out string internalId, out Dictionary<string, string> context, out Node node)
 		{
 			node = null;
 			internalId = null;
+			context = null;
 
-			if (url.StartsWith ("root:/", StringComparison.OrdinalIgnoreCase))
-				return this.GetHelpSourceAndIdFromName (url.Substring ("root:/".Length), out internalId, out node);
+			if (url == "root:") {
+				context = new Dictionary<string, string> { {"specialpage", "master-root"} };
+				internalId = url;
+				node = null;
+				// We return the first help source available since the generator will simply fetch this RootTree instance through it
+				return helpSources.FirstOrDefault ();
+			}
+			if (url.StartsWith (RootNamespace, StringComparison.OrdinalIgnoreCase)) {
+				context = new Dictionary<string, string> { {"specialpage", "root"} };
+				return GetHelpSourceAndIdFromName (url.Substring (RootNamespace.Length), out internalId, out node);
+			}
 
 			HelpSource helpSource = hintSource;
-			if (helpSource == null || string.IsNullOrEmpty (internalId = helpSource.GetInternalIdForUrl (url, out node))) {
+			if (helpSource == null || string.IsNullOrEmpty (internalId = helpSource.GetInternalIdForUrl (url, out node, out context))) {
 				helpSource = null;
 				foreach (var hs in helpSources.Where (h => h.CanHandleUrl (url))) {
-					if (!string.IsNullOrEmpty (internalId = hs.GetInternalIdForUrl (url, out node))) {
+					if (!string.IsNullOrEmpty (internalId = hs.GetInternalIdForUrl (url, out node, out context))) {
 						helpSource = hs;
 						break;
 					}
@@ -396,9 +411,9 @@ namespace Monodoc
 		public HelpSource GetHelpSourceAndIdFromName (string name, out string internalId, out Node node)
 		{
 			internalId = "root:";
-			node = this.LookupEntryPoint (name);
+			node = LookupEntryPoint (name);
 
-			return node == null ? null : node.Nodes.Select (n => n.Tree.HelpSource).Where (hs => hs != null).Distinct ().FirstOrDefault ();
+			return node == null ? null : node.ChildNodes.Select (n => n.Tree.HelpSource).FirstOrDefault (hs => hs != null);
 		}
 
 		public HelpSource GetHelpSourceFromId (int id)
@@ -413,9 +428,7 @@ namespace Monodoc
 				int num = text.IndexOf (":");
 				string text2 = text.Substring (0, num);
 				int id = 0;
-				try {
-					id = int.Parse (text2);
-				} catch {
+				if (!int.TryParse (text2, out id)) {
 					Console.Error.WriteLine ("Failed to parse source-id url: {0} `{1}'", url, text2);
 					return null;
 				}
@@ -428,16 +441,9 @@ namespace Monodoc
 
 		public IndexReader GetIndex ()
 		{
-			try {
-				string text = Path.Combine (this.basedir, "monodoc.index");
-				if (File.Exists (text))
-					return IndexReader.Load (text);
-
-				text = Path.Combine (Settings.Get ("monodocIndexDirectory"), "monodoc.index");
-				return IndexReader.Load (text);
-			} catch {
-				return null;
-			}
+			var paths = GetIndexesPathPrefixes ().Select (bp => Path.Combine (bp, "monodoc.index"));
+			var p = paths.FirstOrDefault (File.Exists);
+			return p == null ? (IndexReader)null : IndexReader.Load (p);
 		}
 
 		public static void MakeIndex ()
@@ -446,40 +452,38 @@ namespace Monodoc
 			rootTree.GenerateIndex ();
 		}
 
-		public void GenerateIndex ()
+		public bool GenerateIndex ()
 		{
 			IndexMaker indexMaker = new IndexMaker ();
 			foreach (HelpSource current in this.helpSources)
 				current.PopulateIndex (indexMaker);
-			string text = Path.Combine (this.basedir, "monodoc.index");
-			try {
-				indexMaker.Save (text);
-			} catch (UnauthorizedAccessException) {
-				text = Path.Combine (Settings.Get ("docPath"), "monodoc.index");
+
+			var paths = GetIndexesPathPrefixes ().Select (bp => Path.Combine (bp, "monodoc.index"));
+			bool successful = false;
+
+			foreach (var path in paths) {
 				try {
-					indexMaker.Save (text);
+					indexMaker.Save (path);
+					successful = true;
+					if (RootTree.IsUnix)
+						RootTree.chmod (path, 420);
 				} catch (UnauthorizedAccessException) {
-					Console.WriteLine ("Unable to write index file in {0}", Path.Combine (Settings.Get ("docPath"), "monodoc.index"));
-					return;
 				}
 			}
-			if (RootTree.IsUnix)
-				RootTree.chmod (text, 420);
+			if (!successful) {
+				Console.WriteLine ("You don't have permissions to write on any of [" + string.Join (", ", paths) + "]");
+				return false;
+			}
 
-			Console.WriteLine ("Documentation index at {0} updated", text);
+			Console.WriteLine ("Documentation index updated");
+			return true;
 		}
 
 		public SearchableIndex GetSearchIndex ()
 		{
-			try {
-				string text = Path.Combine (this.basedir, "search_index");
-				if (System.IO.Directory.Exists (text))
-					return SearchableIndex.Load (text);
-				text = Path.Combine (Settings.Get ("docPath"), "search_index");
-				return SearchableIndex.Load (text);
-			} catch {
-				return null;
-			}
+			var paths = GetIndexesPathPrefixes ().Select (bp => Path.Combine (bp, "search_index"));
+			var p = paths.FirstOrDefault (Directory.Exists);
+			return p == null ? (SearchableIndex)null : SearchableIndex.Load (p);
 		}
 
 		public static void MakeSearchIndex ()
@@ -488,28 +492,26 @@ namespace Monodoc
 			rootTree.GenerateSearchIndex ();
 		}
 
-		public void GenerateSearchIndex ()
+		public bool GenerateSearchIndex ()
 		{
 			Console.WriteLine ("Loading the monodoc tree...");
-			string text = Path.Combine (this.basedir, "search_index");
-			IndexWriter indexWriter;
+			IndexWriter indexWriter = null;
 			var analyzer = new StandardAnalyzer (Lucene.Net.Util.Version.LUCENE_CURRENT);
-			var directory = Lucene.Net.Store.FSDirectory.Open (text);
+			var paths = GetIndexesPathPrefixes ().Select (bp => Path.Combine (bp, "search_index"));
+			bool successful = false;
 
-			try {
-				if (!Directory.Exists (text))
-					Directory.CreateDirectory (text);
-				indexWriter = new IndexWriter (directory, analyzer, true, IndexWriter.MaxFieldLength.LIMITED);
-			} catch (UnauthorizedAccessException) {
+			foreach (var path in paths) {
 				try {
-					text = Path.Combine (Settings.Get ("docPath"), "search_index");
-					if (!Directory.Exists (text))
-						Directory.CreateDirectory (text);
+					if (!Directory.Exists (path))
+						Directory.CreateDirectory (path);
+					var directory = Lucene.Net.Store.FSDirectory.Open (path);
 					indexWriter = new IndexWriter (directory, analyzer, true, IndexWriter.MaxFieldLength.LIMITED);
-				} catch (UnauthorizedAccessException) {
-					Console.WriteLine ("You don't have permissions to write on " + text);
-					return;
-				}
+					successful = true;
+				} catch (UnauthorizedAccessException) {}
+			}
+			if (!successful) {
+				Console.WriteLine ("You don't have permissions to write on any of [" + string.Join (", ", paths) + "]");
+				return false;
 			}
 			Console.WriteLine ("Collecting and adding documents...");
 			foreach (HelpSource current in this.helpSources) {
@@ -518,9 +520,26 @@ namespace Monodoc
 			Console.WriteLine ("Closing...");
 			indexWriter.Optimize ();
 			indexWriter.Close ();
+			return true;
 		}
 
 		[DllImport ("libc")]
 		static extern int chmod (string filename, int mode);
+
+		IEnumerable<string> GetIndexesPathPrefixes ()
+		{
+			yield return basedir;
+			yield return Config.Get ("docPath");
+			var indexDirectory = Config.Get ("monodocIndexDirectory");
+			if (!string.IsNullOrEmpty (indexDirectory))
+				yield return indexDirectory;
+			yield return Path.Combine (Environment.GetFolderPath (Environment.SpecialFolder.ApplicationData), "monodoc");
+		}
+
+		[Obsolete]
+		public string GetTitle (string url)
+		{
+			return "Mono Documentation";
+		}
 	}
 }

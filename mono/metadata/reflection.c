@@ -1753,13 +1753,7 @@ encode_constant (MonoDynamicImage *assembly, MonoObject *val, guint32 *ret_type)
 	char *p, *box_val;
 	char* buf;
 	guint32 idx = 0, len = 0, dummy = 0;
-#ifdef ARM_FPU_FPA
-#if G_BYTE_ORDER == G_LITTLE_ENDIAN
-	guint32 fpa_double [2];
-	guint32 *fpa_p;
-#endif
-#endif
-	
+
 	p = buf = g_malloc (64);
 	if (!val) {
 		*ret_type = MONO_TYPE_CLASS;
@@ -1792,14 +1786,6 @@ handle_enum:
 		break;
 	case MONO_TYPE_R8:
 		len = 8;
-#ifdef ARM_FPU_FPA
-#if G_BYTE_ORDER == G_LITTLE_ENDIAN
-		fpa_p = (guint32*)box_val;
-		fpa_double [0] = fpa_p [1];
-		fpa_double [1] = fpa_p [0];
-		box_val = (char*)fpa_double;
-#endif
-#endif
 		break;
 	case MONO_TYPE_VALUETYPE: {
 		MonoClass *klass = val->vtable->klass;
@@ -2750,10 +2736,15 @@ mono_image_get_fieldref_token (MonoDynamicImage *assembly, MonoObject *f, MonoCl
 	if (token)
 		return token;
 
-	if (is_field_on_inst (field))
-		type = get_field_on_inst_generic_type (field);
-	else
-		type = mono_field_get_type (field);
+	if (field->parent->generic_class && field->parent->generic_class->container_class && field->parent->generic_class->container_class->fields) {
+		int index = field - field->parent->fields;
+		type = mono_field_get_type (&field->parent->generic_class->container_class->fields [index]);
+	} else {
+		if (is_field_on_inst (field))
+			type = get_field_on_inst_generic_type (field);
+		else
+			type = mono_field_get_type (field);
+	}
 	token = mono_image_get_memberref_token (assembly, &field->parent->byval_arg,
 											mono_field_get_name (field),
 											fieldref_encode_signature (assembly, field->parent->image, type));
@@ -5327,7 +5318,7 @@ mono_image_basic_init (MonoReflectionAssemblyBuilder *assemblyb)
 	}
 
 	mono_domain_assemblies_lock (domain);
-	domain->domain_assemblies = g_slist_prepend (domain->domain_assemblies, assembly);
+	domain->domain_assemblies = g_slist_append (domain->domain_assemblies, assembly);
 	mono_domain_assemblies_unlock (domain);
 
 	register_assembly (mono_object_domain (assemblyb), &assemblyb->assembly, &assembly->assembly);
@@ -9393,18 +9384,7 @@ handle_enum:
 		p += 4;
 		break;
 	case MONO_TYPE_R8:
-#if defined(ARM_FPU_FPA) && G_BYTE_ORDER == G_LITTLE_ENDIAN
-		p [0] = argval [4];
-		p [1] = argval [5];
-		p [2] = argval [6];
-		p [3] = argval [7];
-		p [4] = argval [0];
-		p [5] = argval [1];
-		p [6] = argval [2];
-		p [7] = argval [3];
-#else
 		swap_with_size (p, argval, 8, 1);
-#endif
 		p += 8;
 		break;
 	case MONO_TYPE_U8:
@@ -11565,7 +11545,7 @@ mono_reflection_create_dynamic_method (MonoReflectionDynamicMethod *mb)
 			ref = resolve_object (mb->module->image, obj, &handle_class, NULL);
 			if (!ref)
 				ex = mono_get_exception_type_load (NULL, NULL);
-			else if (mono_security_get_mode () == MONO_SECURITY_MODE_CORE_CLR)
+			else if (mono_security_core_clr_enabled ())
 				ex = mono_security_core_clr_ensure_dynamic_method_resolved_object (ref, handle_class);
 
 			if (ex) {

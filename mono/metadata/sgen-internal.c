@@ -95,11 +95,10 @@ description_for_type (int type)
 	case INTERNAL_MEM_STATISTICS: return "statistics";
 	case INTERNAL_MEM_STAT_PINNED_CLASS: return "pinned-class";
 	case INTERNAL_MEM_STAT_REMSET_CLASS: return "remset-class";
-	case INTERNAL_MEM_REMSET: return "remset";
 	case INTERNAL_MEM_GRAY_QUEUE: return "gray-queue";
-	case INTERNAL_MEM_STORE_REMSET: return "store-remset";
 	case INTERNAL_MEM_MS_TABLES: return "marksweep-tables";
 	case INTERNAL_MEM_MS_BLOCK_INFO: return "marksweep-block-info";
+	case INTERNAL_MEM_MS_BLOCK_INFO_SORT: return "marksweep-block-info-sort";
 	case INTERNAL_MEM_EPHEMERON_LINK: return "ephemeron-link";
 	case INTERNAL_MEM_WORKER_DATA: return "worker-data";
 	case INTERNAL_MEM_WORKER_JOB_DATA: return "worker-job-data";
@@ -126,15 +125,16 @@ sgen_alloc_internal_dynamic (size_t size, int type, gboolean assert_on_failure)
 		p = sgen_alloc_os_memory (size, SGEN_ALLOC_INTERNAL | SGEN_ALLOC_ACTIVATE, NULL);
 		if (!p)
 			sgen_assert_memory_alloc (NULL, size, description_for_type (type));
-		return p;
+	} else {
+		index = index_for_size (size);
+
+		p = mono_lock_free_alloc (&allocators [index]);
+		if (!p)
+			sgen_assert_memory_alloc (NULL, size, description_for_type (type));
+		memset (p, 0, size);
 	}
 
-	index = index_for_size (size);
-
-	p = mono_lock_free_alloc (&allocators [index]);
-	if (!p)
-		sgen_assert_memory_alloc (NULL, size, description_for_type (type));
-	memset (p, 0, size);
+	MONO_GC_INTERNAL_ALLOC ((mword)p, size, type);
 	return p;
 }
 
@@ -144,22 +144,26 @@ sgen_free_internal_dynamic (void *addr, size_t size, int type)
 	if (!addr)
 		return;
 
-	if (size > allocator_sizes [NUM_ALLOCATORS - 1]) {
+	if (size > allocator_sizes [NUM_ALLOCATORS - 1])
 		sgen_free_os_memory (addr, size, SGEN_ALLOC_INTERNAL);
-		return;
-	}
+	else
+		mono_lock_free_free (addr);
 
-	mono_lock_free_free (addr);
+	MONO_GC_INTERNAL_DEALLOC ((mword)addr, size, type);
 }
 
 void*
 sgen_alloc_internal (int type)
 {
 	int index = fixed_type_allocator_indexes [type];
+	int size = allocator_sizes [index];
 	void *p;
 	g_assert (index >= 0 && index < NUM_ALLOCATORS);
 	p = mono_lock_free_alloc (&allocators [index]);
-	memset (p, 0, allocator_sizes [index]);
+	memset (p, 0, size);
+
+	MONO_GC_INTERNAL_ALLOC ((mword)p, size, type);
+
 	return p;
 }
 
@@ -175,6 +179,11 @@ sgen_free_internal (void *addr, int type)
 	g_assert (index >= 0 && index < NUM_ALLOCATORS);
 
 	mono_lock_free_free (addr);
+
+	if (MONO_GC_INTERNAL_DEALLOC_ENABLED ()) {
+		int size G_GNUC_UNUSED = allocator_sizes [index];
+		MONO_GC_INTERNAL_DEALLOC ((mword)addr, size, type);
+	}
 }
 
 void

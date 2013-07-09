@@ -39,7 +39,11 @@ namespace System.Reflection
 	[Serializable]
 	[ClassInterfaceAttribute (ClassInterfaceType.None)]
 	[StructLayout (LayoutKind.Sequential)]
+#if MOBILE
+	public class ParameterInfo : ICustomAttributeProvider {
+#else
 	public class ParameterInfo : ICustomAttributeProvider, _ParameterInfo {
+#endif
 
 		protected Type ClassImpl;
 		protected object DefaultValueImpl;
@@ -189,7 +193,7 @@ namespace System.Reflection
 		extern int GetMetadataToken ();
 
 		public
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0
 		virtual
 #endif
 		int MetadataToken {
@@ -199,8 +203,8 @@ namespace System.Reflection
 					MethodInfo mi = prop.GetGetMethod (true);
 					if (mi == null)
 						mi = prop.GetSetMethod (true);
-					/*TODO expose and use a GetParametersNoCopy()*/
-					return mi.GetParameters () [PositionImpl].MetadataToken;
+
+					return mi.GetParametersInternal () [PositionImpl].MetadataToken;
 				} else if (MemberImpl is MethodBase) {
 					return GetMetadataToken ();
 				}
@@ -282,6 +286,17 @@ namespace System.Reflection
 		}
 #endif
 
+#if NET_4_5
+		public virtual IEnumerable<CustomAttributeData> CustomAttributes {
+			get { return GetCustomAttributesData (); }
+		}
+
+		public virtual bool HasDefaultValue {
+			get { throw new NotImplementedException (); }
+		}
+#endif
+
+#if !MOBILE
 		void _ParameterInfo.GetIDsOfNames ([In] ref Guid riid, IntPtr rgszNames, uint cNames, uint lcid, IntPtr rgDispId)
 		{
 			throw new NotImplementedException ();
@@ -302,5 +317,7 @@ namespace System.Reflection
 		{
 			throw new NotImplementedException ();
 		}
+#endif
+
 	}
 }

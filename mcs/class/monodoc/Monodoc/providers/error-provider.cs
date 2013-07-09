@@ -165,27 +165,26 @@ namespace Monodoc.Providers
 			return id == "root:";
 		}
 
-		public override DocumentType GetDocumentTypeForId (string id, out Dictionary<string, string> extraParams)
+		public override DocumentType GetDocumentTypeForId (string id)
 		{
-			extraParams = null;
 			return id == "root:" ? DocumentType.TocXml : DocumentType.ErrorXml;
 		}
 
-		public override string GetInternalIdForUrl (string url, out Node node)
+		public override string GetInternalIdForUrl (string url, out Node node, out Dictionary<string, string> context)
 		{
-			var result = base.GetInternalIdForUrl (url, out node);
+			var result = base.GetInternalIdForUrl (url, out node, out context);
 			return result.ToLower ();
 		}
 		
 		public override void PopulateIndex (IndexMaker index_maker)
 		{
-			foreach (Node n in Tree.RootNode.Nodes)
+			foreach (Node n in Tree.RootNode.ChildNodes)
 				index_maker.Add (n.Caption, n.Caption, n.Element);
 		}
 
 		public override void PopulateSearchableIndex (IndexWriter writer) 
 		{
-			foreach (Node n in Tree.RootNode.Nodes) {
+			foreach (Node n in Tree.RootNode.ChildNodes) {
 				XmlSerializer reader = new XmlSerializer (typeof (ErrorDocumentation));
 				ErrorDocumentation d = (ErrorDocumentation)reader.Deserialize (GetHelpStream (n.Element.Substring (6)));
 				SearchableDocument doc = new SearchableDocument ();

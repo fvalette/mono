@@ -228,6 +228,7 @@ typedef struct {
 #endif
 #define MONO_ARCH_GOT_REG X86_EBX
 #define MONO_ARCH_HAVE_GET_TRAMPOLINES 1
+#define MONO_ARCH_HAVE_GENERAL_RGCTX_LAZY_FETCH_TRAMPOLINE 1
 
 #define MONO_ARCH_HAVE_CMOV_OPS 1
 
@@ -261,6 +262,10 @@ typedef struct {
 #define MONO_ARCH_HAVE_CONTEXT_SET_INT_REG 1
 #define MONO_ARCH_HAVE_SETUP_ASYNC_CALLBACK 1
 #define MONO_ARCH_GSHAREDVT_SUPPORTED 1
+
+#ifdef TARGET_OSX
+#define MONO_ARCH_HAVE_TLS_GET_REG 1
+#endif
 
 gboolean
 mono_x86_tail_call_supported (MonoMethodSignature *caller_sig, MonoMethodSignature *callee_sig) MONO_INTERNAL;
@@ -297,7 +302,8 @@ typedef enum {
 	GSHAREDVT_RET_I1 = 5,
 	GSHAREDVT_RET_U1 = 6,
 	GSHAREDVT_RET_I2 = 7,
-	GSHAREDVT_RET_U2 = 8
+	GSHAREDVT_RET_U2 = 8,
+	GSHAREDVT_RET_IREG = 9
 } GSharedVtRetMarshal;
 
 typedef struct {
@@ -312,6 +318,8 @@ typedef struct {
 	int stack_usage, map_count;
 	/* If not -1, then make a virtual call using this vtable offset */
 	int vcall_offset;
+	/* If 1, make an indirect call to the address in the rgctx reg */
+	int calli;
 	/* Whenever this is a in or an out call */
 	int gsharedvt_in;
 	int map [MONO_ZERO_LEN_ARRAY];
@@ -337,8 +345,8 @@ mono_x86_throw_corlib_exception (mgreg_t *regs, guint32 ex_token_index,
 void 
 mono_x86_patch (unsigned char* code, gpointer target) MONO_INTERNAL;
 
-void
-mono_x86_start_gsharedvt_call (GSharedVtCallInfo *info, gpointer *caller, gpointer *callee) MONO_INTERNAL;
+gpointer
+mono_x86_start_gsharedvt_call (GSharedVtCallInfo *info, gpointer *caller, gpointer *callee, gpointer mrgctx_reg) MONO_INTERNAL;
 
 #endif /* __MONO_MINI_X86_H__ */  
 

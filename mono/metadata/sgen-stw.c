@@ -113,10 +113,10 @@ restart_threads_until_none_in_managed_allocator (void)
 			gboolean result;
 			if (info->skip || info->gc_disabled || !info->joined_stw)
 				continue;
-			if (!info->thread_is_dying && (!info->stack_start || info->in_critical_region ||
+			if (!info->thread_is_dying && (!info->stack_start || info->in_critical_region || info->info.inside_critical_region ||
 					is_ip_in_managed_allocator (info->stopped_domain, info->stopped_ip))) {
 				binary_protocol_thread_restart ((gpointer)mono_thread_info_get_tid (info));
-				SGEN_LOG (3, "thread %p resumed.", (void*)info->info.native_handle);
+				SGEN_LOG (3, "thread %p resumed.", (void*) (size_t) info->info.native_handle);
 				result = sgen_resume_thread (info);
 				if (result) {
 					++restart_count;
@@ -233,6 +233,7 @@ sgen_stop_world (int generation)
 	MONO_GC_WORLD_STOP_END ();
 
 	sgen_memgov_collection_start (generation);
+	sgen_bridge_reset_data ();
 
 	return count;
 }
@@ -248,6 +249,7 @@ sgen_restart_world (int generation, GGTimingInfo *timing)
 	unsigned long usec, bridge_usec;
 
 	/* notify the profiler of the leftovers */
+	/* FIXME this is the wrong spot at we can STW for non collection reasons. */
 	if (G_UNLIKELY (mono_profiler_events & MONO_PROFILE_GC_MOVES))
 		sgen_gc_event_moves ();
 	mono_profiler_gc_event (MONO_GC_EVENT_PRE_START_WORLD, generation);
@@ -271,6 +273,8 @@ sgen_restart_world (int generation, GGTimingInfo *timing)
 	SGEN_LOG (2, "restarted %d thread(s) (pause time: %d usec, max: %d)", count, (int)usec, (int)max_pause_usec);
 	mono_profiler_gc_event (MONO_GC_EVENT_POST_START_WORLD, generation);
 	MONO_GC_WORLD_RESTART_END (generation);
+
+	mono_thread_hazardous_try_free_some ();
 
 	bridge_process (generation);
 

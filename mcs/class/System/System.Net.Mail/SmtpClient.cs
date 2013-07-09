@@ -29,7 +29,14 @@
 //
 
 #if SECURITY_DEP
+
+#if MONOTOUCH
+using System.Security.Cryptography.X509Certificates;
+#else
 extern alias PrebuiltSystem;
+using X509CertificateCollection = PrebuiltSystem::System.Security.Cryptography.X509Certificates.X509CertificateCollection;
+#endif
+
 #endif
 
 using System;
@@ -48,10 +55,6 @@ using System.Net.Configuration;
 using System.Configuration;
 using System.Net.Security;
 using System.Security.Authentication;
-
-#if SECURITY_DEP
-using X509CertificateCollection = PrebuiltSystem::System.Security.Cryptography.X509Certificates.X509CertificateCollection;
-#endif
 
 namespace System.Net.Mail {
 	public class SmtpClient
@@ -149,6 +152,8 @@ namespace System.Net.Mail {
 
 			if (port != 0)
 				this.port = port;
+			else if (this.port == 0)
+				this.port = 25;
 		}
 
 		#endregion // Constructors

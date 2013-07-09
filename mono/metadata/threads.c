@@ -33,6 +33,7 @@
 #include <mono/metadata/monitor.h>
 #include <mono/metadata/gc-internal.h>
 #include <mono/metadata/marshal.h>
+#include <mono/metadata/runtime.h>
 #include <mono/io-layer/io-layer.h>
 #ifndef HOST_WIN32
 #include <mono/io-layer/threads.h>
@@ -46,6 +47,7 @@
 #include <mono/utils/mono-threads.h>
 #include <mono/utils/hazard-pointer.h>
 #include <mono/utils/mono-tls.h>
+#include <mono/utils/atomic.h>
 
 #include <mono/metadata/gc-internal.h>
 
@@ -243,7 +245,7 @@ mono_thread_get_tls_offset (void)
  * If handle_store() returns FALSE the thread must not be started
  * because Mono is shutting down.
  */
-static gboolean handle_store(MonoThread *thread)
+static gboolean handle_store(MonoThread *thread, gboolean force_attach)
 {
 	mono_threads_lock ();
 
@@ -252,7 +254,7 @@ static gboolean handle_store(MonoThread *thread)
 	if (threads_starting_up)
 		mono_g_hash_table_remove (threads_starting_up, thread);
 
-	if (shutting_down) {
+	if (shutting_down && !force_attach) {
 		mono_threads_unlock ();
 		return FALSE;
 	}
@@ -388,6 +390,10 @@ static void thread_cleanup (MonoInternalThread *thread)
 
 	/* if the thread is not in the hash it has been removed already */
 	if (!handle_remove (thread)) {
+		if (thread == mono_thread_internal_current ()) {
+			mono_domain_unset ();
+			mono_memory_barrier ();
+		}
 		/* This needs to be called even if handle_remove () fails */
 		if (mono_thread_cleanup_fn)
 			mono_thread_cleanup_fn (thread);
@@ -396,6 +402,15 @@ static void thread_cleanup (MonoInternalThread *thread)
 	mono_release_type_locks (thread);
 
 	mono_profiler_thread_end (thread->tid);
+
+	if (thread == mono_thread_internal_current ()) {
+		/*
+		 * This will signal async signal handlers that the thread has exited.
+		 * The profiler callback needs this to be set, so it cannot be done earlier.
+		 */
+		mono_domain_unset ();
+		mono_memory_barrier ();
+	}
 
 	if (thread == mono_thread_internal_current ())
 		mono_thread_pop_appdomain_ref ();
@@ -410,7 +425,11 @@ static void thread_cleanup (MonoInternalThread *thread)
 	if (mono_thread_cleanup_fn)
 		mono_thread_cleanup_fn (thread);
 
-	MONO_GC_UNREGISTER_ROOT (thread->thread_pinning_ref);
+	if (mono_gc_is_moving ()) {
+		MONO_GC_UNREGISTER_ROOT (thread->thread_pinning_ref);
+		thread->thread_pinning_ref = NULL;
+	}
+		
 }
 
 static gpointer
@@ -602,14 +621,14 @@ static guint32 WINAPI start_wrapper_internal(void *data)
 
 	THREAD_DEBUG (g_message ("%s: (%"G_GSIZE_FORMAT") Start wrapper terminating", __func__, GetCurrentThreadId ()));
 
-	thread_cleanup (internal);
-
 	/* Do any cleanup needed for apartment state. This
 	 * cannot be done in thread_cleanup since thread_cleanup could be 
 	 * called for a thread other than the current thread.
 	 * mono_thread_cleanup_apartment_state cleans up apartment
 	 * for the current thead */
 	mono_thread_cleanup_apartment_state ();
+
+	thread_cleanup (internal);
 
 	/* Remove the reference to the thread object in the TLS data,
 	 * so the thread object can be finalized.  This won't be
@@ -620,7 +639,6 @@ static guint32 WINAPI start_wrapper_internal(void *data)
 	 * to TLS data.)
 	 */
 	SET_CURRENT_OBJECT (NULL);
-	mono_domain_unset ();
 
 	return(0);
 }
@@ -763,9 +781,11 @@ mono_thread_create_internal (MonoDomain *domain, gpointer func, gpointer arg, gb
 	internal->handle=thread_handle;
 	internal->tid=tid;
 	internal->apartment_state=ThreadApartmentState_Unknown;
-	internal->thread_pinning_ref = internal;
 	internal->managed_id = get_next_managed_thread_id ();
-	MONO_GC_REGISTER_ROOT_PINNING (internal->thread_pinning_ref);
+	if (mono_gc_is_moving ()) {
+		internal->thread_pinning_ref = internal;
+		MONO_GC_REGISTER_ROOT_PINNING (internal->thread_pinning_ref);
+	}
 
 	internal->synch_cs = g_new0 (CRITICAL_SECTION, 1);
 	InitializeCriticalSection (internal->synch_cs);
@@ -774,7 +794,7 @@ mono_thread_create_internal (MonoDomain *domain, gpointer func, gpointer arg, gb
 	if (threadpool_thread)
 		mono_thread_set_state (internal, ThreadState_Background);
 
-	if (handle_store (thread))
+	if (handle_store (thread, FALSE))
 		ResumeThread (thread_handle);
 
 	/* Check that the managed and unmanaged layout of MonoInternalThread matches */
@@ -790,6 +810,18 @@ mono_thread_create (MonoDomain *domain, gpointer func, gpointer arg)
 	mono_thread_create_internal (domain, func, arg, FALSE, FALSE, 0);
 }
 
+#if defined(HOST_WIN32) && defined(__GNUC__)
+static __inline__ __attribute__((always_inline))
+/* This is not defined by gcc */
+unsigned long long
+__readfsdword (unsigned long long offset)
+{
+	unsigned long long value;
+	__asm__("movl %%fs:%a[offset], %k[value]" : [value] "=q" (value) : [offset] "irm" (offset));
+	return value;
+}
+#endif
+
 /*
  * mono_thread_get_stack_bounds:
  *
@@ -799,29 +831,74 @@ mono_thread_create (MonoDomain *domain, gpointer func, gpointer arg)
 void
 mono_thread_get_stack_bounds (guint8 **staddr, size_t *stsize)
 {
-#if defined(HAVE_PTHREAD_GET_STACKSIZE_NP) && defined(HAVE_PTHREAD_GET_STACKADDR_NP)
-	*staddr = (guint8*)pthread_get_stackaddr_np (pthread_self ());
-	*stsize = pthread_get_stacksize_np (pthread_self ());
+#if defined(HOST_WIN32)
+	/* Windows */
+	/* http://en.wikipedia.org/wiki/Win32_Thread_Information_Block */
+	void* tib = (void*)__readfsdword(0x18);
+	guint8 *stackTop = (guint8*)*(int*)((char*)tib + 4);
+	guint8 *stackBottom = (guint8*)*(int*)((char*)tib + 8);
+
+	*staddr = stackBottom;
+	*stsize = stackTop - stackBottom;
+	return;
+
+#elif defined(HAVE_PTHREAD_GET_STACKSIZE_NP) && defined(HAVE_PTHREAD_GET_STACKADDR_NP)
+	/* Mac OS X */
+	*staddr = (guint8*)pthread_get_stackaddr_np (pthread_self());
+	*stsize = pthread_get_stacksize_np (pthread_self());
 
 	/* staddr points to the start of the stack, not the end */
 	*staddr -= *stsize;
-	*staddr = (guint8*)((gssize)*staddr & ~(mono_pagesize () - 1));
+
+	/* When running under emacs, sometimes staddr is not aligned to a page size */
+	*staddr = (guint8*)((gssize)*staddr & ~(mono_pagesize() - 1));
 	return;
-	/* FIXME: simplify the mess below */
-#elif !defined(HOST_WIN32)
+
+#elif (defined(HAVE_PTHREAD_GETATTR_NP) || defined(HAVE_PTHREAD_ATTR_GET_NP)) && defined(HAVE_PTHREAD_ATTR_GETSTACK)
+	/* Linux, BSD */
+
 	pthread_attr_t attr;
 	guint8 *current = (guint8*)&attr;
 
-	pthread_attr_init (&attr);
-#  ifdef HAVE_PTHREAD_GETATTR_NP
-	pthread_getattr_np (pthread_self(), &attr);
-#  else
-#    ifdef HAVE_PTHREAD_ATTR_GET_NP
-	pthread_attr_get_np (pthread_self(), &attr);
-#    elif defined(sun)
 	*staddr = NULL;
-	pthread_attr_getstacksize (&attr, &stsize);
-#    elif defined(__OpenBSD__)
+	*stsize = (size_t)-1;
+
+	pthread_attr_init (&attr);
+
+#if     defined(HAVE_PTHREAD_GETATTR_NP)
+	/* Linux */
+	pthread_getattr_np (pthread_self(), &attr);
+
+#elif   defined(HAVE_PTHREAD_ATTR_GET_NP)
+	/* BSD */
+	pthread_attr_get_np (pthread_self(), &attr);
+
+#else
+#error 	Cannot determine which API is needed to retrieve pthread attributes.
+#endif
+
+	pthread_attr_getstack (&attr, (void**)staddr, stsize);
+	pthread_attr_destroy (&attr);
+
+	if (*staddr)
+		g_assert ((current > *staddr) && (current < *staddr + *stsize));
+
+	/* When running under emacs, sometimes staddr is not aligned to a page size */
+	*staddr = (guint8*)((gssize)*staddr & ~(mono_pagesize () - 1));
+	return;
+
+#elif defined(__OpenBSD__)
+	/* OpenBSD */
+	/* TODO :   Determine if this code is actually still needed. It may already be covered by the case above. */
+
+	pthread_attr_t attr;
+	guint8 *current = (guint8*)&attr;
+
+	*staddr = NULL;
+	*stsize = (size_t)-1;
+
+	pthread_attr_init (&attr);
+
 	stack_t ss;
 	int rslt;
 
@@ -830,34 +907,45 @@ mono_thread_get_stack_bounds (guint8 **staddr, size_t *stsize)
 
 	*staddr = (guint8*)((size_t)ss.ss_sp - ss.ss_size);
 	*stsize = ss.ss_size;
-#    else
-	*staddr = NULL;
-	*stsize = 0;
-	return;
-#    endif
-#  endif
-
-#  if !defined(sun)
-#    if !defined(__OpenBSD__)
-	pthread_attr_getstack (&attr, (void**)staddr, stsize);
-#    endif
-	if (*staddr)
-		g_assert ((current > *staddr) && (current < *staddr + *stsize));
-#  endif
 
 	pthread_attr_destroy (&attr);
-#else
-	*staddr = NULL;
-	*stsize = (size_t)-1;
-#endif
+
+	if (*staddr)
+		g_assert ((current > *staddr) && (current < *staddr + *stsize));
 
 	/* When running under emacs, sometimes staddr is not aligned to a page size */
 	*staddr = (guint8*)((gssize)*staddr & ~(mono_pagesize () - 1));
-}	
+	return;
+
+#elif defined(sun) || defined(__native_client__)
+	/* Solaris/Illumos, NaCl */
+	pthread_attr_t attr;
+	pthread_attr_init (&attr);
+	pthread_attr_getstacksize (&attr, &stsize);
+	pthread_attr_destroy (&attr);
+	*staddr = NULL;
+	return;
+
+#else
+	/* FIXME:   It'd be better to use the 'error' preprocessor macro here so we know
+		    at compile-time if the target platform isn't supported. */
+#warning Unable to determine how to retrieve a thread's stack-bounds for this platform in 'mono_thread_get_stack_bounds()'.
+	*staddr = NULL;
+	*stsize = 0;
+	return;
+#endif
+}
 
 MonoThread *
 mono_thread_attach (MonoDomain *domain)
 {
+	return mono_thread_attach_full (domain, FALSE);
+}
+
+MonoThread *
+mono_thread_attach_full (MonoDomain *domain, gboolean force_attach)
+{
+	MonoThreadInfo *info;
 	MonoInternalThread *thread;
 	MonoThread *current_thread;
 	HANDLE thread_handle;
@@ -894,9 +982,11 @@ mono_thread_attach (MonoDomain *domain)
 	thread->android_tid = (gpointer) gettid ();
 #endif
 	thread->apartment_state=ThreadApartmentState_Unknown;
-	thread->thread_pinning_ref = thread;
 	thread->managed_id = get_next_managed_thread_id ();
-	MONO_GC_REGISTER_ROOT_PINNING (thread->thread_pinning_ref);
+	if (mono_gc_is_moving ()) {
+		thread->thread_pinning_ref = thread;
+		MONO_GC_REGISTER_ROOT_PINNING (thread->thread_pinning_ref);
+	}
 
 	thread->stack_ptr = &tid;
 
@@ -905,9 +995,13 @@ mono_thread_attach (MonoDomain *domain)
 
 	THREAD_DEBUG (g_message ("%s: Attached thread ID %"G_GSIZE_FORMAT" (handle %p)", __func__, tid, thread_handle));
 
+	info = mono_thread_info_current ();
+	g_assert (info);
+	thread->thread_info = info;
+
 	current_thread = new_thread_with_internal (domain, thread);
 
-	if (!handle_store (current_thread)) {
+	if (!handle_store (current_thread, force_attach)) {
 		/* Mono is shutting down, so just wait for the end */
 		for (;;)
 			Sleep (10000);
@@ -951,8 +1045,6 @@ mono_thread_detach (MonoThread *thread)
 	g_return_if_fail (thread != NULL);
 
 	THREAD_DEBUG (g_message ("%s: mono_thread_detach for %p (%"G_GSIZE_FORMAT")", __func__, thread, (gsize)thread->internal_thread->tid));
-	
-	mono_profiler_thread_end (thread->internal_thread->tid);
 
 	thread_cleanup (thread->internal_thread);
 
@@ -1063,8 +1155,10 @@ HANDLE ves_icall_System_Threading_Thread_Thread_internal(MonoThread *this,
 		
 		internal->handle=thread;
 		internal->tid=tid;
-		internal->thread_pinning_ref = internal;
-		MONO_GC_REGISTER_ROOT_PINNING (internal->thread_pinning_ref);
+		if (mono_gc_is_moving ()) {
+			internal->thread_pinning_ref = internal;
+			MONO_GC_REGISTER_ROOT_PINNING (internal->thread_pinning_ref);
+		}
 		
 
 		/* Don't call handle_store() here, delay it to Start.
@@ -1117,7 +1211,7 @@ static void mono_thread_start (MonoThread *thread)
 	 * launched, to avoid the main thread deadlocking while trying
 	 * to clean up a thread that will never be signalled.
 	 */
-	if (!handle_store (thread))
+	if (!handle_store (thread, FALSE))
 		return;
 
 	ResumeThread (internal->handle);
@@ -2086,13 +2180,14 @@ mono_thread_get_abort_signal (void)
 {
 #ifdef HOST_WIN32
 	return -1;
-#else
-#ifndef	SIGRTMIN
+#elif defined(PLATFORM_ANDROID)
+	return SIGUNUSED;
+#elif !defined (SIGRTMIN)
 #ifdef SIGUSR1
 	return SIGUSR1;
 #else
 	return -1;
-#endif
+#endif /* SIGUSR1 */
 #else
 	static int abort_signum = -1;
 	int i;
@@ -2109,7 +2204,6 @@ mono_thread_get_abort_signal (void)
 	}
 	/* fallback to the old way */
 	return SIGRTMIN;
-#endif
 #endif /* HOST_WIN32 */
 }
 
@@ -2456,6 +2550,12 @@ ves_icall_System_Threading_Thread_VolatileReadFloat (void *ptr)
 	return *((volatile float *) (ptr));
 }
 
+MonoObject*
+ves_icall_System_Threading_Volatile_Read_T (void *ptr)
+{
+	return (MonoObject*)*((volatile MonoObject**)ptr);
+}
+
 void
 ves_icall_System_Threading_Thread_VolatileWrite1 (void *ptr, gint8 value)
 {
@@ -2504,6 +2604,20 @@ ves_icall_System_Threading_Thread_VolatileWriteFloat (void *ptr, float value)
 	*((volatile float *) ptr) = value;
 }
 
+void
+ves_icall_System_Threading_Volatile_Write_T (void *ptr, MonoObject *value)
+{
+	*((volatile MonoObject **) ptr) = value;
+	mono_gc_wbarrier_generic_nostore (ptr);
+}
+
+void
+mono_thread_init_tls (void)
+{
+	MONO_FAST_TLS_INIT (tls_current_object);
+	mono_native_tls_alloc (&current_object_key, NULL);
+}
+
 void mono_thread_init (MonoThreadStartCB start_cb,
 		       MonoThreadAttachCB attach_cb)
 {
@@ -2517,8 +2631,6 @@ void mono_thread_init (MonoThreadStartCB start_cb,
 	mono_init_static_data_info (&thread_static_info);
 	mono_init_static_data_info (&context_static_info);
 
-	MONO_FAST_TLS_INIT (tls_current_object);
-	mono_native_tls_alloc (&current_object_key, NULL);
 	THREAD_DEBUG (g_message ("%s: Allocated current_object_key %d", __func__, current_object_key));
 
 	mono_thread_start_cb = start_cb;
@@ -2828,21 +2940,6 @@ mono_threads_set_shutting_down (void)
 	}
 }
 
-/** 
- * mono_threads_is_shutting_down:
- *
- * Returns whether a thread has commenced shutdown of Mono.  Note that
- * if the function returns FALSE the caller must not assume that
- * shutdown is not in progress, because the situation might have
- * changed since the function returned.  For that reason this function
- * is of very limited utility.
- */
-gboolean
-mono_threads_is_shutting_down (void)
-{
-	return shutting_down;
-}
-
 void mono_thread_manage (void)
 {
 	struct wait_data wait_data;
@@ -2883,14 +2980,12 @@ void mono_thread_manage (void)
 		THREAD_DEBUG (g_message ("%s: I have %d threads after waiting.", __func__, wait->num));
 	} while(wait->num>0);
 
-	mono_threads_set_shutting_down ();
-
-	/* No new threads will be created after this point */
-
-	mono_runtime_set_shutting_down ();
-
-	THREAD_DEBUG (g_message ("%s: threadpool cleanup", __func__));
-	mono_thread_pool_cleanup ();
+	/* Mono is shutting down, so just wait for the end */
+	if (!mono_runtime_try_shutdown ()) {
+		/*FIXME mono_thread_suspend probably should call mono_thread_execute_interruption when self interrupting. */
+		mono_thread_suspend (mono_thread_internal_current ());
+		mono_thread_execute_interruption (mono_thread_internal_current ());
+	}
 
 	/* 
 	 * Remove everything but the finalizer thread and self.
@@ -3445,6 +3540,10 @@ collect_appdomain_thread (gpointer key, gpointer value, gpointer user_data)
 gboolean
 mono_threads_abort_appdomain_threads (MonoDomain *domain, int timeout)
 {
+#ifdef __native_client__
+	return FALSE;
+#endif
+
 	abort_appdomain_data user_data;
 	guint32 start_time;
 	int orig_timeout = timeout;
@@ -4420,6 +4519,10 @@ mono_runtime_has_tls_get (void)
 int
 mono_thread_kill (MonoInternalThread *thread, int signal)
 {
+#ifdef __native_client__
+	/* Workaround pthread_kill abort() in NaCl glibc. */
+	return -1;
+#endif
 #ifdef HOST_WIN32
 	/* Win32 uses QueueUserAPC and callers of this are guarded */
 	g_assert_not_reached ();
@@ -4570,6 +4673,7 @@ transition_to_suspended (MonoInternalThread *thread)
 	} else {
 		thread->state &= ~ThreadState_SuspendRequested;
 		thread->state |= ThreadState_Suspended;
+		mono_thread_info_finish_suspend ();
 	}
 	LeaveCriticalSection (thread->synch_cs);
 }
@@ -4593,8 +4697,10 @@ suspend_thread_internal (MonoInternalThread *thread, gboolean interrupt)
 		gboolean running_managed;
 
 		/*A null info usually means the thread is already dead. */
-		if (!(info = mono_thread_info_safe_suspend_sync ((MonoNativeThreadId)(gsize)thread->tid, interrupt)))
+		if (!(info = mono_thread_info_safe_suspend_sync ((MonoNativeThreadId)(gsize)thread->tid, interrupt))) {
+			LeaveCriticalSection (thread->synch_cs);
 			return;
+		}
 
 		ji = mono_thread_info_get_last_managed (info);
 		protected_wrapper = ji && mono_threads_is_critical_method (ji->method);
@@ -4696,4 +4802,21 @@ resume_thread_internal (MonoInternalThread *thread)
 	thread->state &= ~ThreadState_Suspended;
 	LeaveCriticalSection (thread->synch_cs);
 	return TRUE;
+}
+
+
+/*
+ * mono_thread_is_foreign:
+ * @thread: the thread to query
+ *
+ * This function allows one to determine if a thread was created by the mono runtime and has
+ * a well defined lifecycle or it's a foreigh one, created by the native environment.
+ *
+ * Returns: true if @thread was not created by the runtime.
+ */
+mono_bool
+mono_thread_is_foreign (MonoThread *thread)
+{
+	MonoThreadInfo *info = thread->internal_thread->thread_info;
+	return info->runtime_thread == FALSE;
 }

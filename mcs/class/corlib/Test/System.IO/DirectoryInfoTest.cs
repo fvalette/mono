@@ -138,6 +138,7 @@ namespace MonoTests.System.IO
 		}
 
 		[Test]
+		[Category ("MobileNotWorking")]
 		public void Name ()
 		{
 			string path = TempFolder + DSC + "DIT.Name.Test";
@@ -1062,6 +1063,7 @@ namespace MonoTests.System.IO
 			Assert.AreEqual (TempFolder + DSC + "ToString.Test", info.ToString ());
 		}
 
+#if !MOBILE
 		[Test]
 		public void Serialization ()
 		{
@@ -1099,7 +1101,7 @@ namespace MonoTests.System.IO
 			Assert.AreEqual (info.Name, clone.Name, "#1");
 			Assert.AreEqual (info.FullName, clone.FullName, "#2");
 		}
-		
+
 		// Needed so that UnixSymbolicLinkInfo doesn't have to
 		// be JITted on windows
 		private void Symlink_helper ()
@@ -1137,7 +1139,7 @@ namespace MonoTests.System.IO
 
 			Symlink_helper ();
 		}
-
+#endif
 		static bool RunningOnUnix {
 			get {
 				int p = (int) Environment.OSVersion.Platform;

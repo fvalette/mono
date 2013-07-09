@@ -20,14 +20,14 @@ TEST_RESOURCES = \
 	Test/System/test-uri-props-manual.txt \
 	Test/System/test-uri-relative-props.txt
 
-TEST_MCS_FLAGS = -r:System.Drawing.dll -r:Mono.Security.dll -r:System.Data -r:System.Xml.dll -r:System.Core.dll -nowarn:0618 -nowarn:219 -nowarn:67 -nowarn:169 -nowarn:612 \
+TEST_MCS_FLAGS = -r:System.Drawing.dll -r:Mono.Security.dll -r:System.Data -r:System.Xml.dll -r:System.Core.dll -nowarn:618,672,219,67,169,612 \
 	$(foreach f, $(TEST_RESOURCES), -resource:$(f),$(notdir $(f)))
 
 ifneq (1, $(FRAMEWORK_VERSION_MAJOR))
 LIB_MCS_FLAGS = -nowarn:618 -d:CONFIGURATION_2_0 -unsafe $(RESOURCE_FILES:%=-resource:%)
 TEST_MCS_FLAGS += -r:System.Configuration
 PROFILE_ANY_MOBILE := $(filter monotouch monodroid, $(PROFILE))
-NOT_SL := $(filter net_2_0 net_4_0 net_4_5 monotouch monotouch_runtime monodroid mobile, $(PROFILE))
+NOT_SL := $(filter net_2_0 net_4_0 net_4_5 monotouch_runtime monodroid mobile, $(PROFILE))
 endif
 ifeq (2.1, $(FRAMEWORK_VERSION))
 LIB_MCS_FLAGS += -d:INSIDE_SYSTEM
@@ -36,7 +36,7 @@ LIB_MCS_FLAGS += -d:SECURITY_DEP
 endif
 endif
 ifeq (monotouch, $(PROFILE))
-LIB_MCS_FLAGS += -d:FULL_AOT_RUNTIME
+LIB_MCS_FLAGS += -d:FULL_AOT_RUNTIME -d:SECURITY_DEP
 endif
 
 EXTRA_DISTFILES = \
@@ -106,7 +106,7 @@ FILE_SECURITY_DEP := $(wildcard ../lib/$(PROFILE)/Mono.Security.dll)
 endif
 ifdef FILE_SECURITY_DEP
 CYCLIC_DEP_FILES += $(FILE_SECURITY_DEP)
-LIB_MCS_FLAGS += -d:SECURITY_DEP -r:Mono.Security.dll
+LIB_MCS_FLAGS += -d:SECURITY_DEP -r:MonoSecurity=Mono.Security.dll
 endif
 
 ifndef PROFILE_ANY_MOBILE

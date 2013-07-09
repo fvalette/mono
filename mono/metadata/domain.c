@@ -35,6 +35,7 @@
 #include <mono/metadata/mono-debug-debugger.h>
 #include <mono/metadata/mono-config.h>
 #include <mono/metadata/threads-types.h>
+#include <mono/metadata/runtime.h>
 #include <metadata/threads.h>
 #include <metadata/profiler-private.h>
 #include <mono/metadata/coree.h>
@@ -463,6 +464,11 @@ jit_info_table_realloc (MonoJitInfoTable *old)
 	/* number of needed places for elements needed */
 	required_size = (int)((long)num_elements * JIT_INFO_TABLE_FILL_RATIO_DENOM / JIT_INFO_TABLE_FILL_RATIO_NOM);
 	num_chunks = (required_size + MONO_JIT_INFO_TABLE_CHUNK_SIZE - 1) / MONO_JIT_INFO_TABLE_CHUNK_SIZE;
+	if (num_chunks == 0) {
+		g_assert (num_elements == 0);
+		return jit_info_table_new (old->domain);
+	}
+	g_assert (num_chunks > 0);
 
 	new = g_malloc (MONO_SIZEOF_JIT_INFO_TABLE + sizeof (MonoJitInfoTableChunk*) * num_chunks);
 	new->domain = old->domain;
@@ -690,7 +696,7 @@ mono_jit_info_table_add (MonoDomain *domain, MonoJitInfo *ji)
 		domain->jit_info_table = new_table;
 		mono_memory_barrier ();
 		domain->num_jit_info_tables++;
-		mono_thread_hazardous_free_or_queue (table, (MonoHazardousFreeFunc)jit_info_table_free);
+		mono_thread_hazardous_free_or_queue (table, (MonoHazardousFreeFunc)jit_info_table_free, TRUE, FALSE);
 		table = new_table;
 
 		goto restart;
@@ -754,7 +760,7 @@ mono_jit_info_free_or_queue (MonoDomain *domain, MonoJitInfo *ji)
 	if (domain->num_jit_info_tables <= 1) {
 		/* Can it actually happen that we only have one table
 		   but ji is still hazardous? */
-		mono_thread_hazardous_free_or_queue (ji, g_free);
+		mono_thread_hazardous_free_or_queue (ji, g_free, TRUE, FALSE);
 	} else {
 		domain->jit_info_free_queue = g_slist_prepend (domain->jit_info_free_queue, ji);
 	}
@@ -1296,6 +1302,7 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	mono_classes_init ();
 	mono_loader_init ();
 	mono_reflection_init ();
+	mono_runtime_init_tls ();
 
 	/* FIXME: When should we release this memory? */
 	MONO_GC_REGISTER_ROOT_FIXED (appdomains_list);
@@ -1508,6 +1515,7 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
                 mono_defaults.corlib, "System", "AppDomain");
 	g_assert (mono_defaults.appdomain_class != 0);
 
+#ifndef DISABLE_REMOTING
 	mono_defaults.transparent_proxy_class = mono_class_from_name (
                 mono_defaults.corlib, "System.Runtime.Remoting.Proxies", "TransparentProxy");
 	g_assert (mono_defaults.transparent_proxy_class != 0);
@@ -1515,6 +1523,15 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	mono_defaults.real_proxy_class = mono_class_from_name (
                 mono_defaults.corlib, "System.Runtime.Remoting.Proxies", "RealProxy");
 	g_assert (mono_defaults.real_proxy_class != 0);
+
+	mono_defaults.marshalbyrefobject_class =  mono_class_from_name (
+	        mono_defaults.corlib, "System", "MarshalByRefObject");
+	g_assert (mono_defaults.marshalbyrefobject_class != 0);
+
+	mono_defaults.iremotingtypeinfo_class = mono_class_from_name (
+	        mono_defaults.corlib, "System.Runtime.Remoting", "IRemotingTypeInfo");
+	g_assert (mono_defaults.iremotingtypeinfo_class != 0);
+#endif
 
 	mono_defaults.mono_method_message_class = mono_class_from_name (
                 mono_defaults.corlib, "System.Runtime.Remoting.Messaging", "MonoMethodMessage");
@@ -1548,18 +1565,6 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	        mono_defaults.corlib, "System.Runtime.InteropServices", "Marshal");
 	g_assert (mono_defaults.marshal_class != 0);
 
-	mono_defaults.iserializeable_class = mono_class_from_name (
-	        mono_defaults.corlib, "System.Runtime.Serialization", "ISerializable");
-	g_assert (mono_defaults.iserializeable_class != 0);
-
-	mono_defaults.serializationinfo_class = mono_class_from_name (
-	        mono_defaults.corlib, "System.Runtime.Serialization", "SerializationInfo");
-	g_assert (mono_defaults.serializationinfo_class != 0);
-
-	mono_defaults.streamingcontext_class = mono_class_from_name (
-	        mono_defaults.corlib, "System.Runtime.Serialization", "StreamingContext");
-	g_assert (mono_defaults.streamingcontext_class != 0);
-
 	mono_defaults.typed_reference_class =  mono_class_from_name (
 	        mono_defaults.corlib, "System", "TypedReference");
 	g_assert (mono_defaults.typed_reference_class != 0);
@@ -1568,17 +1573,9 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 	        mono_defaults.corlib, "System", "RuntimeArgumentHandle");
 	g_assert (mono_defaults.argumenthandle_class != 0);
 
-	mono_defaults.marshalbyrefobject_class =  mono_class_from_name (
-	        mono_defaults.corlib, "System", "MarshalByRefObject");
-	g_assert (mono_defaults.marshalbyrefobject_class != 0);
-
 	mono_defaults.monitor_class =  mono_class_from_name (
 	        mono_defaults.corlib, "System.Threading", "Monitor");
 	g_assert (mono_defaults.monitor_class != 0);
-
-	mono_defaults.iremotingtypeinfo_class = mono_class_from_name (
-	        mono_defaults.corlib, "System.Runtime.Remoting", "IRemotingTypeInfo");
-	g_assert (mono_defaults.iremotingtypeinfo_class != 0);
 
 	mono_defaults.runtimesecurityframe_class = mono_class_from_name (
 	        mono_defaults.corlib, "System.Security", "RuntimeSecurityFrame");
@@ -1611,13 +1608,6 @@ mono_init_internal (const char *filename, const char *exe_filename, const char *
 		mono_defaults.corlib, "System.Reflection", "CustomAttributeData");
 
 	/* these are initialized lazily when COM features are used */
-#ifndef DISABLE_COM
-	mono_defaults.variant_class = NULL;
-	mono_defaults.com_object_class = NULL;
-	mono_defaults.com_interop_proxy_class = NULL;
-	mono_defaults.iunknown_class = NULL;
-	mono_defaults.idispatch_class = NULL;
-#endif
 
 	mono_class_init (mono_defaults.array_class);
 	mono_defaults.generic_nullable_class = mono_class_from_name (
@@ -1690,48 +1680,6 @@ mono_init_version (const char *domain_name, const char *version)
 {
 	return mono_init_internal (domain_name, NULL, version);
 }
-
-#ifndef DISABLE_COM
-/**
- * mono_init_com_types:
- *
- * Initializes all types needed for COM Interop in mono_defaults structure. 
- */
-void 
-mono_init_com_types (void)
-{
-	static gboolean initialized = FALSE;
-
-	if (initialized)
-		return;
-	
-	/* FIXME: do I need some threading protection here */
-
-	g_assert (mono_defaults.corlib);
-
-	mono_defaults.variant_class = mono_class_from_name (
-	        mono_defaults.corlib, "System", "Variant");
-	g_assert (mono_defaults.variant_class != 0);
-
-	mono_defaults.com_object_class = mono_class_from_name (
-	        mono_defaults.corlib, "System", "__ComObject");
-	g_assert (mono_defaults.com_object_class != 0);
-
-	mono_defaults.com_interop_proxy_class = mono_class_from_name (
-	        mono_defaults.corlib, "Mono.Interop", "ComInteropProxy");
-	g_assert (mono_defaults.com_interop_proxy_class != 0);
-
-	mono_defaults.iunknown_class = mono_class_from_name (
-	        mono_defaults.corlib, "Mono.Interop", "IUnknown");
-	g_assert (mono_defaults.iunknown_class != 0);
-
-	mono_defaults.idispatch_class = mono_class_from_name (
-	        mono_defaults.corlib, "Mono.Interop", "IDispatch");
-	g_assert (mono_defaults.idispatch_class != 0);
-
-	initialized = TRUE;
-}
-#endif /*DISABLE_COM*/
 
 /**
  * mono_cleanup:
@@ -1899,12 +1847,6 @@ mono_domain_assembly_open (MonoDomain *domain, const char *name)
 }
 
 static void
-free_slist (gpointer key, gpointer value, gpointer user_data)
-{
-	g_slist_free (value);
-}
-
-static void
 unregister_vtable_reflection_type (MonoVTable *vtable)
 {
 	MonoObject *type = vtable->type;
@@ -1984,8 +1926,22 @@ mono_domain_free (MonoDomain *domain, gboolean force)
 	/* This needs to be done before closing assemblies */
 	mono_gc_clear_domain (domain);
 
+	/* Close dynamic assemblies first, since they have no ref count */
 	for (tmp = domain->domain_assemblies; tmp; tmp = tmp->next) {
 		MonoAssembly *ass = tmp->data;
+		if (!ass->image || !ass->image->dynamic)
+			continue;
+		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Unloading domain %s[%p], assembly %s[%p], ref_count=%d", domain->friendly_name, domain, ass->aname.name, ass, ass->ref_count);
+		if (!mono_assembly_close_except_image_pools (ass))
+			tmp->data = NULL;
+	}
+
+	for (tmp = domain->domain_assemblies; tmp; tmp = tmp->next) {
+		MonoAssembly *ass = tmp->data;
+		if (!ass)
+			continue;
+		if (!ass->image || ass->image->dynamic)
+			continue;
 		mono_trace (G_LOG_LEVEL_INFO, MONO_TRACE_ASSEMBLY, "Unloading domain %s[%p], assembly %s[%p], ref_count=%d", domain->friendly_name, domain, ass->aname.name, ass, ass->ref_count);
 		if (!mono_assembly_close_except_image_pools (ass))
 			tmp->data = NULL;
@@ -2710,4 +2666,3 @@ mono_framework_version (void)
 {
 	return current_runtime->framework_version [0] - '0';
 }
-

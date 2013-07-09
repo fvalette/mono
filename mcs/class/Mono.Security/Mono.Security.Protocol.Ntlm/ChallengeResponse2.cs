@@ -49,7 +49,12 @@ using Mono.Security.Cryptography;
 
 namespace Mono.Security.Protocol.Ntlm {
 
-	public static class ChallengeResponse2 {
+#if INSIDE_SYSTEM
+	internal
+#else
+	public
+#endif
+	static class ChallengeResponse2 {
 
 		static private byte[] magic = { 0x4B, 0x47, 0x53, 0x21, 0x40, 0x23, 0x24, 0x25 };
 
@@ -62,11 +67,7 @@ namespace Mono.Security.Protocol.Ntlm {
 			var buffer = new byte [21];
 
 			// create Lan Manager password
-#if MOONLIGHT
-			DESCryptoServiceProvider des = new DESCryptoServiceProvider ();
-#else
 			DES des = DES.Create ();
-#endif
 			des.Mode = CipherMode.ECB;
 			ICryptoTransform ct = null;
 				
@@ -99,11 +100,7 @@ namespace Mono.Security.Protocol.Ntlm {
 			var buffer = new byte [21];
 
 			// create NT password
-#if MOONLIGHT
-			MD4Managed md4 = new MD4Managed ();
-#else
 			MD4 md4 = MD4.Create ();
-#endif
 			byte[] data = ((password == null) ? (new byte [0]) : (Encoding.Unicode.GetBytes (password)));
 			byte[] hash = md4.ComputeHash (data);
 			Buffer.BlockCopy (hash, 0, buffer, 0, 16);
@@ -135,11 +132,7 @@ namespace Mono.Security.Protocol.Ntlm {
 			lm = new byte [24];
 			nonce.CopyTo (lm, 0);
 
-#if MOONLIGHT
-			MD5Managed md5 = new MD5Managed ();
-#else
 			MD5 md5 = MD5.Create ();
-#endif
 			
 			var hash = md5.ComputeHash (sessionNonce);
 			var newChallenge = new byte [8];
@@ -154,12 +147,12 @@ namespace Mono.Security.Protocol.Ntlm {
 			Array.Clear (hash, 0, hash.Length);
 		}
 
-		static byte[] Compute_NTLMv2 (Type2Message type2, string username, string password)
+		static byte[] Compute_NTLMv2 (Type2Message type2, string username, string password, string domain)
 		{
 			var ntlm_hash = Compute_NTLM_Password (password);
 
 			var ubytes = Encoding.Unicode.GetBytes (username.ToUpperInvariant ());
-			var tbytes = Encoding.Unicode.GetBytes (type2.TargetName.ToUpperInvariant ());
+			var tbytes = Encoding.Unicode.GetBytes (domain);
 
 			var bytes = new byte [ubytes.Length + tbytes.Length];
 			ubytes.CopyTo (bytes, 0);
@@ -212,7 +205,7 @@ namespace Mono.Security.Protocol.Ntlm {
 		}
 
 		public static void Compute (Type2Message type2, NtlmAuthLevel level,
-		                            string username, string password,
+		                            string username, string password, string domain,
 		                            out byte[] lm, out byte[] ntlm)
 		{
 			lm = null;
@@ -237,7 +230,7 @@ namespace Mono.Security.Protocol.Ntlm {
 				break;
 
 			case NtlmAuthLevel.NTLMv2_only:
-				ntlm = Compute_NTLMv2 (type2, username, password);
+				ntlm = Compute_NTLMv2 (type2, username, password, domain);
 				break;
 
 			default:
@@ -248,11 +241,7 @@ namespace Mono.Security.Protocol.Ntlm {
 		static byte[] GetResponse (byte[] challenge, byte[] pwd) 
 		{
 			byte[] response = new byte [24];
-#if MOONLIGHT
-			DESCryptoServiceProvider des = new DESCryptoServiceProvider ();
-#else
 			DES des = DES.Create ();
-#endif
 			des.Mode = CipherMode.ECB;
 			des.Key = PrepareDESKey (pwd, 0);
 			ICryptoTransform ct = des.CreateEncryptor ();

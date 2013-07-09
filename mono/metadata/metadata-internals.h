@@ -196,6 +196,7 @@ struct _MonoImage {
 	 * It is NULL terminated.
 	 */
 	MonoAssembly **references;
+	int nreferences;
 
 	MonoImage **modules;
 	guint32 module_count;
@@ -281,6 +282,7 @@ struct _MonoImage {
 	GHashTable *cominterop_wrapper_cache; /* LOCKING: marshal lock */
 	GHashTable *thunk_invoke_cache;
 	GHashTable *wrapper_param_names;
+	GHashTable *synchronized_generic_cache;
 
 	/*
 	 * indexed by MonoClass pointers
@@ -292,6 +294,9 @@ struct _MonoImage {
 	GHashTable *castclass_cache;
 	GHashTable *proxy_isinst_cache;
 	GHashTable *rgctx_template_hash; /* LOCKING: templates lock */
+	GHashTable *delegate_invoke_generic_cache;
+	GHashTable *delegate_begin_invoke_generic_cache;
+	GHashTable *delegate_end_invoke_generic_cache;
 
 	/* Contains rarely used fields of runtime structures belonging to this image */
 	MonoPropertyHash *property_hash;

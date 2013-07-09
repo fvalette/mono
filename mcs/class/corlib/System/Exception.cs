@@ -29,6 +29,7 @@
 //
 
 using System.Collections;
+using System.Collections.Generic;
 using System.Diagnostics;
 using System.Reflection;
 using System.Text;
@@ -44,7 +45,11 @@ namespace System
 	[ComDefaultInterface (typeof (_Exception))]
 	[ClassInterface (ClassInterfaceType.None)]
 	[StructLayout (LayoutKind.Sequential)]
+#if MOBILE
+	public class Exception : ISerializable
+#else
 	public class Exception : ISerializable, _Exception
+#endif
 	{
 #pragma warning disable 169, 649
 		#region Sync with object-internals.h
@@ -269,7 +274,7 @@ namespace System
 			get {
 				if (_data == null) {
 					// default to empty dictionary
-					_data = (IDictionary) new Hashtable ();
+					_data = new Dictionary<object, object> ();
 				}
 				return _data;
 			}
@@ -304,11 +309,7 @@ namespace System
 			info.AddValue ("RemoteStackTraceString", _remoteStackTraceString);
 			info.AddValue ("RemoteStackIndex", remote_stack_index);
 			info.AddValue ("HResult", hresult);
-#if !MOONLIGHT
 			info.AddValue ("Source", Source);
-#else
-			info.AddValue ("Source", null);
-#endif
 			info.AddValue ("ExceptionMethod", null);
 			info.AddValue ("Data", _data, typeof (IDictionary));
 		}
@@ -350,7 +351,7 @@ namespace System
 
 		internal void GetFullNameForStackTrace (StringBuilder sb, MethodBase mi)
 		{
-			ParameterInfo[] p = mi.GetParameters ();
+			ParameterInfo[] p = mi.GetParametersInternal ();
 			sb.Append (mi.DeclaringType.ToString ());
 			sb.Append (".");
 			sb.Append (mi.Name);

@@ -603,8 +603,12 @@ thread_suspend_func (gpointer user_data, void *sigctx, MonoContext *ctx)
 	} else {
 		tls->unwind_state.unwind_data [MONO_UNWIND_DATA_LMF] = mono_get_lmf ();
 		if (sigctx) {
+#ifdef MONO_ARCH_HAVE_SIGCTX_TO_MONOCTX
 			mono_arch_sigctx_to_monoctx (sigctx, &tls->unwind_state.ctx);
 			tls->unwind_state.valid = TRUE;
+#else
+			tls->unwind_state.valid = FALSE;
+#endif
 		} else if (ctx) {
 			memcpy (&tls->unwind_state.ctx, ctx, sizeof (MonoContext));
 			tls->unwind_state.valid = TRUE;
@@ -1210,6 +1214,8 @@ thread_mark_func (gpointer user_data, guint8 *stack_start, guint8 *stack_end, gb
 	else
 		precise_pass (tls, stack_start, stack_end);
 }
+
+#ifndef DISABLE_JIT
 
 static void
 mini_gc_init_gc_map (MonoCompile *cfg)
@@ -2428,6 +2434,8 @@ mini_gc_create_gc_map (MonoCompile *cfg)
 	create_map (cfg);
 }
 
+#endif /* DISABLE_JIT */
+
 static void
 parse_debug_options (void)
 {
@@ -2510,9 +2518,16 @@ mini_gc_init (void)
 #else
 
 void
+mini_gc_enable_gc_maps_for_aot (void)
+{
+}
+
+void
 mini_gc_init (void)
 {
 }
+
+#ifndef DISABLE_JIT
 
 static void
 mini_gc_init_gc_map (MonoCompile *cfg)
@@ -2534,7 +2549,11 @@ mini_gc_set_slot_type_from_cfa (MonoCompile *cfg, int slot_offset, GCSlotType ty
 {
 }
 
+#endif /* DISABLE_JIT */
+
 #endif
+
+#ifndef DISABLE_JIT
 
 /*
  * mini_gc_init_cfg:
@@ -2551,6 +2570,8 @@ mini_gc_init_cfg (MonoCompile *cfg)
 
 	mini_gc_init_gc_map (cfg);
 }
+
+#endif /* DISABLE_JIT */
 
 /*
  * Problems with the current code:

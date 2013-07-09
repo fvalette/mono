@@ -86,9 +86,24 @@ namespace Monodoc.Ecma
 			set;
 		}
 
+		/* This property tells if the above collections only correct value
+		 * is the number of item in it to represent generic arguments
+		 */
+		public bool GenericTypeArgumentsIsNumeric {
+			get {
+				return GenericTypeArguments != null && GenericTypeArguments.FirstOrDefault () == null;
+			}
+		}
+
 		public IList<EcmaDesc> GenericMemberArguments {
 			get;
 			set;
+		}
+
+		public bool GenericMemberArgumentsIsNumeric {
+			get {
+				return GenericMemberArguments != null && GenericMemberArguments.FirstOrDefault () == null;
+			}
 		}
 
 		public IList<EcmaDesc> MemberArguments {
@@ -300,9 +315,17 @@ namespace Monodoc.Ecma
 			return string.IsNullOrEmpty (desc.Namespace) ? string.Empty : desc.Namespace + ".";
 		}
 
-		string FormatGenericArgs (IEnumerable<EcmaDesc> genericArgs)
+		string FormatGenericArgs (IEnumerable<EcmaDesc> args)
 		{
-			return genericArgs != null ? "<" + string.Join (",", genericArgs.Select (t => FormatNamespace (t) + t.ToCompleteTypeName ())) + ">" : string.Empty;
+			if (args == null || !args.Any ())
+				return string.Empty;
+			// If we only have the number of generic arguments, use ` notation
+			if (args.First () == null)
+				return "`" + args.Count ();
+
+			IEnumerable<string> argsList = args.Select (t => FormatNamespace (t) + t.ToCompleteTypeName ());
+
+			return "<" + string.Join (",", argsList) + ">";
 		}
 
 		string FormatGenericArgsFull (IEnumerable<EcmaDesc> genericArgs)

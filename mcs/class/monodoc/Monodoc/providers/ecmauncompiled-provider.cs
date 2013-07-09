@@ -50,13 +50,19 @@ namespace Monodoc.Providers
 
 			this.Storage = new UncompiledDocStorage (BasePath);
 
-			EcmaDoc.PopulateTreeFromIndexFile (basedoc, Tree, null, null);
+			EcmaDoc.PopulateTreeFromIndexFile (basedoc, UriPrefix, Tree, null, null, indexGenerator);
 		}
 
 		protected override string UriPrefix {
 			get {
 				return "uncompiled:";
 			}
+		}
+
+		public override Stream GetImage (string url)
+		{
+			var path = Path.Combine (BasePath, "_images", url);
+			return File.Exists (path) ? File.OpenRead (path) : (Stream)null;
 		}
 	}
 }

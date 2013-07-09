@@ -28,11 +28,17 @@ var asses = new string [] {
 	"Tests.System.Reactive",
 	};
 
-var blacklist = new string [] {
-	// FIXME: this is the only source that we cannot build.
-	//Test/../../../../external/rx/Rx/NET/Source/Tests.System.Reactive/Tests/ObservableExTest.cs(1478,27): error CS0411: The type arguments for method `System.Reactive.Linq.ObservableEx.ManySelect<TSource,TResult>(this System.IObservable<TSource>, System.Func<System.IObservable<TSource>,TResult>)' cannot be inferred from the usage. Try specifying the type arguments explicitly
-	"ObservableExTest.cs",
+var excluded_android_asses = new string [] {
+	"System.Reactive.Windows.Forms",
+	"System.Reactive.Windows.Threading",
+	};
+var excluded_ios_asses = new string [] {
+	"System.Reactive.Providers",
+	"System.Reactive.Windows.Forms",
+	"System.Reactive.Windows.Threading",
+	}
 
+var blacklist = new string [] {
 	// WPF Dispatcher.Invoke() is not implemented.
 	"DispatcherSchedulerTest.cs",
 	// This is not limited to Dispatcher, but many of them are relevant to it, or Winforms (we filter it out by not defining HAS_WINFORMS)
@@ -49,7 +55,7 @@ foreach (var ass in asses) {
 		"Mono.Reactive.Testing" : ass;
 	var basePath = "../../external/rx/Rx/NET/Source";
 	var csproj = Path.Combine (basePath, ass, ass + ".csproj");
-	var pathPrefix = ass == "Tests.System.Reactive" ? "../../" : "../";
+	var pathPrefix = ass == "Tests.System.Reactive" ? "../" : "";
 
 	var android_dir = Path.GetFullPath (Path.Combine (csproj, "..", "..", "Rx_Xamarin", "android", "rx", monoass));
 	var ios_dir = Path.GetFullPath (Path.Combine (csproj, "..", "..", "Rx_Xamarin", "iOS", "rx", monoass));
@@ -71,21 +77,20 @@ foreach (var ass in asses) {
 	var assinfo = Path.Combine (monoass, "Assembly", "AssemblyInfo.cs");
 
 	var projectRefs = "";
-	
 
 	if (monoass != "Tests.System.Reactive") {
 		if (!Directory.Exists (assdir))
 			Directory.CreateDirectory (assdir);
 		using (var tw = File.CreateText (assinfo)) {
-			tw.WriteLine ("// Due to InternalsVisibleTo issue we don't add versions so far...");
-			tw.WriteLine ("// [assembly:System.Reflection.AssemblyVersion (\"0.0.0.0\")]");
+			tw.WriteLine ("[assembly:System.Reflection.AssemblyVersion (\"2.1.30214.0\")]");
+			tw.WriteLine ("[assembly:System.Reflection.AssemblyFileVersion (\"2.1.30214.0\")]");
 		}
 	}
 
 	var sourcesXml = "";
 	var projectRefsXml = "";
 	var resourcesXml = "";
-	
+
 	var doc = XDocument.Load (csproj);
 	var rootNS = doc.XPathSelectElement ("//*[local-name()='RootNamespace']").Value;
 	var guid = doc.XPathSelectElement ("//*[local-name()='ProjectGuid']").Value;
@@ -95,15 +100,16 @@ foreach (var ass in asses) {
 
 	Console.WriteLine ("Writing " + sources + " ...");
 	using (var tw = File.CreateText (sources)) {
-		//if (monoass != "Tests.System.Reactive")
-		//	tw.WriteLine ("Assembly/AssemblyInfo.cs");
+		if (monoass != "Tests.System.Reactive")
+			tw.WriteLine ("Assembly/AssemblyInfo.cs");
 		foreach (var path in doc.XPathSelectElements ("//*[local-name()='Compile']")
 			.Select (el => el.Attribute ("Include").Value)
 			.Select (s => s.Replace ("\\", "/"))) {
 			if (!blacklist.Any (b => path.Contains (b))) {
-				var p = Path.Combine (pathPrefix, basePath, ass, path);
-				tw.WriteLine (p);
-				sourcesXml += "    <Compile Include='..\\..\\..\\..\\..\\..\\" + p.Replace ('/', '\\') + "'>\n      <Link>" + path + "</Link>\n    </Compile>\n";
+				var p = Path.Combine (ass, path);
+				var p2 = Path.Combine ("..", basePath, ass, path);
+				tw.WriteLine (Path.Combine (pathPrefix, p2));
+				sourcesXml += "    <Compile Include=\"..\\..\\..\\..\\" + p.Replace ('/', '\\') + "\">\n      <Link>" + path.Replace ('/', '\\') + "</Link>\n    </Compile>\n";
 			}
 		}
 	}
@@ -111,9 +117,11 @@ foreach (var ass in asses) {
 	Console.WriteLine ("Writing more_build_args...");
 	var argsPath = Path.Combine (Path.GetDirectoryName (sources), "more_build_args");
 	using (var tw = File.CreateText (argsPath)) {
-		tw.WriteLine ("-d:SIGNED");
-		tw.WriteLine ("-delaysign");
-		tw.WriteLine ("-keyfile:../reactive.pub");
+		if (ass.StartsWith ("System")) {
+			tw.WriteLine ("-d:SIGNED");
+			tw.WriteLine ("-delaysign");
+			tw.WriteLine ("-keyfile:../reactive.pub");
+		}
 
 		foreach (var path in doc.XPathSelectElements ("//*[local-name()='EmbeddedResource']")) {
 			var res = path.Attribute ("Include").Value;
@@ -126,28 +134,42 @@ foreach (var ass in asses) {
 			File.Copy (resx, resxDest);
 			//Process.Start ("resgen", String.Format ("{0} {1}", resx, resPath));
 			tw.WriteLine ("-resource:{0},{1}.{2}", resFileName, rootNS, resFileName);
-			var p = Path.Combine (pathPrefix, basePath, ass, res);
+			var p = Path.Combine ("..", basePath, ass, res);
 			resourcesXml += "    <EmbeddedResource Include='..\\..\\..\\..\\..\\..\\" + p + "'>\n      <Link>" + res + "</Link>\n    </EmbeddedResource>\n";
 		}
 	}
 	foreach (var f in new string [] { android_proj, ios_proj}) {
-		var prj_guid = (f == android_proj ? guids_android : guids_ios) [guid_idx];
-		var template = (f == android_proj ? template_android : template_ios);
-		var prj_prefix = (f == android_proj ? "android_" : "ios_");
-		/*
-		var idx = projectRefsXml.IndexOf ('\\');
-		if (idx > 0) {
-			idx = projectRefsXml.IndexOf ('\\', idx + 1);
-			projectRefsXml = projectRefsXml.Substring (0, idx) + projectRefsXml.Substring (idx).Replace ("System", prj_prefix + "System");
+		string prj_guid;
+		string template, prj_prefix, nunitProjRef, nunitRef;
+		var androidNUnit = "<ProjectReference Include=\"..\\..\\Andr.Unit\\Android.NUnitLite\\Android.NUnitLite.csproj\"><Project>{6A005891-A3D6-4398-A729-F645397D573A}</Project><Name>Android.NUnitLite</Name></ProjectReference>";
+		if (f == android_proj) {
+			prj_guid = guids_android [guid_idx].ToUpper ();
+			template = template_android;
+			prj_prefix ="android_";
+			nunitProjRef = ass.Contains ("Test") ? androidNUnit : "";
+			nunitRef = "";
+		} else {
+			prj_guid = guids_ios [guid_idx].ToUpper ();
+			template = template_ios;
+			prj_prefix ="ios_";
+			nunitProjRef = "";
+			nunitRef = ass.Contains ("Test") ? "<Reference Include='MonoTouch.NUnitLite' />" : "";
 		}
-		*/
 		using (var tw = File.CreateText (f)) {
 			tw.Write (template
 				.Replace ("PROJECT_GUID_GOES_HERE", '{' + prj_guid + '}')
 				.Replace ("ASSEMBLY_NAME_GOES_HERE", monoass)
-				.Replace ("PROJECT_REFERENCES_GO_HERE", projectRefsXml.Replace ("System", prj_prefix + "System").Replace ("Include=\"..\\" + prj_prefix, "Include=\"..\\"))
-				.Replace ("RESOURCES_GO_HERE", sourcesXml)
-				.Replace ("SOURCES_GO_HERE", resourcesXml));
+				.Replace ("OPTIONAL_ANDROID_NUNITLITE", nunitProjRef)
+				.Replace ("OPTIONAL_MONOTOUCH_NUNITLITE", nunitRef)
+				.Replace ("PROJECT_REFERENCES_GO_HERE",
+					projectRefsXml
+						.Replace (" xmlns=\"http://schemas.microsoft.com/developer/msbuild/2003\"", "")
+						.Replace ("Microsoft.Reactive.Testing", "Mono.Reactive.Testing")
+						.Replace ("System", prj_prefix + "System")
+						.Replace ("Mono", prj_prefix + "Mono")
+						.Replace ("Include=\"..\\" + prj_prefix, "Include=\"..\\"))
+				.Replace ("RESOURCES_GO_HERE", resourcesXml.Replace ('\\', f == ios_proj ? '/' : '\\')) // whoa, BACKSLASH doesn't work only on android on MD/mac...!
+				.Replace ("SOURCES_GO_HERE", sourcesXml.Replace ('\\', f == ios_proj ? '/' : '\\'))); // whoa, BACKSLASH doesn't work only on android on MD/mac...!
 		}
 	}
 	guid_idx++;

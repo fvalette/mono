@@ -6,12 +6,25 @@ using System.Xml;
 using System.Xml.Linq;
 using System.Collections.Generic;
 
+using Monodoc.Ecma;
+
 namespace Monodoc.Providers
 {
+	public enum EcmaNodeType {
+		Invalid,
+		Namespace,
+		Type,
+		Member,
+		Meta, // A node that's here to serve as a header for other node
+	}
+
 	// Common functionality between ecma-provider and ecmauncompiled-provider
 	internal class EcmaDoc
 	{
+		static EcmaUrlParser parser = new EcmaUrlParser ();
+
 		public static void PopulateTreeFromIndexFile (string indexFilePath,
+		                                              string idPrefix,
 		                                              Tree tree,
 		                                              IDocStorage storage,
 		                                              Dictionary<string, XElement> nsSummaries,
@@ -54,7 +67,7 @@ namespace Monodoc.Providers
 						nsElements.Add (ExtractClassSummary (typeFilePath));
 
 						var typeCaption = EcmaDoc.GetTypeCaptionFromIndex (type);
-						var url = "ecma:" + id + '#' + typeCaption + '/';
+						var url = idPrefix + id + '#' + typeCaption + '/';
 						typeCaption = EcmaDoc.GetTypeCaptionFromIndex (type, true);
 						var typeNode = nsNode.CreateNode (typeCaption, url);
 
@@ -113,7 +126,15 @@ namespace Monodoc.Providers
 				Console.Error.WriteLine ("Warning: couldn't process type file `{0}' as it doesn't exist", finalPath);
 				return null;
 			}
-			return XDocument.Load (finalPath);
+
+			XDocument doc = null;
+			try {
+				doc = XDocument.Load (finalPath);
+			} catch (Exception e) {
+				Console.WriteLine ("Document `{0}' is unparsable, {1}", finalPath, e.ToString ());
+			}
+
+			return doc;
 		}
 
 		public static string GetTypeCaptionFromIndex (XElement typeNodeFromIndex, bool full = false)
@@ -171,6 +192,325 @@ namespace Monodoc.Providers
 			return caption;
 		}
 
+		public static Node MatchNodeWithEcmaUrl (string url, Tree tree)
+		{
+			Node result = null;
+			EcmaDesc desc;
+			if (!parser.TryParse (url, out desc))
+				return null;
+
+			// Namespace search
+			Node currentNode = tree.RootNode;
+			Node searchNode = new Node () { Caption = desc.Namespace };
+			int index = currentNode.ChildNodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
+			if (index >= 0)
+				result = currentNode.ChildNodes[index];
+			if (desc.DescKind == EcmaDesc.Kind.Namespace || index < 0)
+				return result;
+
+			// Type search
+			currentNode = result;
+			result = null;
+			searchNode.Caption = desc.ToCompleteTypeName ();
+			if (!desc.GenericTypeArgumentsIsNumeric)
+				index = currentNode.ChildNodes.BinarySearch (searchNode, EcmaTypeNodeComparer.Instance);
+			else
+				index = GenericTypeBacktickSearch (currentNode.ChildNodes, desc);
+			if (index >= 0)
+				result = currentNode.ChildNodes[index];
+			if ((desc.DescKind == EcmaDesc.Kind.Type && !desc.IsEtc) || index < 0)
+				return result;
+
+			// Member selection
+			currentNode = result;
+			result = null;
+			var caption = desc.IsEtc ? EtcKindToCaption (desc.Etc) : MemberKindToCaption (desc.DescKind);
+			currentNode = FindNodeForCaption (currentNode.ChildNodes, caption);
+			if (currentNode == null
+			    || (desc.IsEtc && desc.DescKind == EcmaDesc.Kind.Type && string.IsNullOrEmpty (desc.EtcFilter)))
+				return currentNode;
+
+			// Member search
+			result = null;
+			var format = desc.DescKind == EcmaDesc.Kind.Constructor ? EcmaDesc.Format.WithArgs : EcmaDesc.Format.WithoutArgs;
+			searchNode.Caption = desc.ToCompleteMemberName (format);
+			index = currentNode.ChildNodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
+			if (index < 0)
+				return null;
+			result = currentNode.ChildNodes[index];
+			if (result.ChildNodes.Count == 0 || desc.IsEtc)
+				return result;
+
+			// Overloads search
+			currentNode = result;
+			searchNode.Caption = desc.ToCompleteMemberName (EcmaDesc.Format.WithArgs);
+			index = currentNode.ChildNodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
+			if (index < 0)
+				return result;
+			result = result.ChildNodes[index];
+
+			return result;
+		}
+
+		static int GenericTypeBacktickSearch (IList<Node> childNodes, EcmaDesc desc)
+		{
+			/* Our strategy is to search for the non-generic variant of the type
+			 * (which in most case should fail) and then use the closest index
+			 * to linearily search for the generic variant with the right generic arg number
+			 */
+			var searchNode = new Node () { Caption = desc.TypeName };
+			int index = childNodes.BinarySearch (searchNode, EcmaTypeNodeComparer.Instance);
+			// Place the index in the right start position
+			if (index < 0)
+				index = ~index;
+
+			for (int i = index; i < childNodes.Count; i++) {
+				var currentNode = childNodes[i];
+				// Find the index of the generic argument list
+				int genericIndex = currentNode.Caption.IndexOf ('<');
+				// If we are not on the same base type name anymore, there is no point
+				int captionSlice = genericIndex != -1 ? genericIndex : currentNode.Caption.LastIndexOf (' ');
+				if (string.Compare (searchNode.Caption, 0,
+				                    currentNode.Caption, 0,
+				                    Math.Max (captionSlice, searchNode.Caption.Length),
+				                    StringComparison.Ordinal) != 0)
+					break;
+
+				var numGenerics = CountTypeGenericArguments (currentNode.Caption, genericIndex);
+				if (numGenerics == desc.GenericTypeArguments.Count) {
+					// Simple comparison if we are not looking for an inner type
+					if (desc.NestedType == null)
+						return i;
+					// If more complicated, we fallback to using EcmaUrlParser
+					var caption = currentNode.Caption;
+					caption = "T:" + caption.Substring (0, caption.LastIndexOf (' ')).Replace ('.', '+');
+					EcmaDesc otherDesc;
+					var parser = new EcmaUrlParser ();
+					if (parser.TryParse (caption, out otherDesc) && desc.NestedType.Equals (otherDesc.NestedType))
+						return i;
+				}
+			}
+
+			return -1;
+		}
+
+		// This comparer returns the answer straight from caption comparison
+		class EcmaGenericNodeComparer : IComparer<Node>
+		{
+			public static readonly EcmaGenericNodeComparer Instance = new EcmaGenericNodeComparer ();
+
+			public int Compare (Node n1, Node n2)
+			{
+				return string.Compare (n1.Caption, n2.Caption, StringComparison.Ordinal);
+			}
+		}
+
+		// This comparer take into account the space in the caption
+		class EcmaTypeNodeComparer : IComparer<Node>
+		{
+			public static readonly EcmaTypeNodeComparer Instance = new EcmaTypeNodeComparer ();
+
+			public int Compare (Node n1, Node n2)
+			{
+				int length1 = CaptionLength (n1.Caption);
+				int length2 = CaptionLength (n2.Caption);
+
+				return string.Compare (n1.Caption, 0, n2.Caption, 0, Math.Max (length1, length2), StringComparison.Ordinal);
+			}
+
+			int CaptionLength (string caption)
+			{
+				var length = caption.LastIndexOf (' ');
+				return length == -1 ? caption.Length : length;
+			}
+		}
+
+		public static Dictionary<string, string> GetContextForEcmaNode (string hash, string sourceID, Node node)
+		{
+			var args = new Dictionary<string, string> ();
+
+			args["source-id"] = sourceID;
+
+			if (node != null) {
+				var nodeType = GetNodeType (node);
+				switch (nodeType) {
+				case EcmaNodeType.Namespace:
+					args["show"] = "namespace";
+					args["namespace"] = node.Element.Substring ("N:".Length);
+					break;
+				case EcmaNodeType.Type:
+					args["show"] = "typeoverview";
+					break;
+				case EcmaNodeType.Member:
+				case EcmaNodeType.Meta:
+					switch (GetNodeMemberTypeChar (node)){
+					case 'C':
+						args["membertype"] = "Constructor";
+						break;
+					case 'M':
+						args["membertype"] = "Method";
+						break;
+					case 'P':
+						args["membertype"] = "Property";
+						break;
+					case 'F':
+						args["membertype"] = "Field";
+						break;
+					case 'E':
+						args["membertype"] = "Event";
+						break;
+					case 'O':
+						args["membertype"] = "Operator";
+						break;
+					case 'X':
+						args["membertype"] = "ExtensionMethod";
+						break;
+					case '*':
+						args["membertype"] = "All";
+						break;
+					}
+
+					if (nodeType == EcmaNodeType.Meta) {
+						args["show"] = "members";
+						args["index"] = "all";
+					} else {
+						args["show"] = "member";
+						args["index"] = node.Element;
+					}
+					break;
+				}
+			}
+
+			if (!string.IsNullOrEmpty (hash))
+				args["hash"] = hash;
+
+			return args;
+		}
+
+		public static EcmaNodeType GetNodeType (Node node)
+		{
+			// We guess the node type by checking the depth level it's at in the tree
+			int level = GetNodeLevel (node);
+			switch (level) {
+			case 0:
+				return EcmaNodeType.Namespace;
+			case 1:
+				return EcmaNodeType.Type;
+			case 2:
+				return EcmaNodeType.Meta;
+			case 3: // Here it's either a member or, in case of overload, a meta
+				return node.IsLeaf ? EcmaNodeType.Member : EcmaNodeType.Meta;
+			case 4: // At this level, everything is necessarily a member
+				return EcmaNodeType.Member;
+			default:
+				return EcmaNodeType.Invalid;
+			}
+		}
+
+		public static char GetNodeMemberTypeChar (Node node)
+		{
+			int level = GetNodeLevel (node);
+			// We try to reach the member group node depending on node nested level
+			switch (level) {
+			case 2:
+				return node.Element[0];
+			case 3:
+				return node.Parent.Element[0];
+			case 4:
+				return node.Parent.Parent.Element[0];
+			default:
+				throw new ArgumentException ("node", "Couldn't determine member type of node `" + node.Caption + "'");
+			}
+		}
+
+		public static int GetNodeLevel (Node node)
+		{
+			int i = 0;
+			for (; !node.Element.StartsWith ("root:/", StringComparison.OrdinalIgnoreCase); i++) {
+				node = node.Parent;
+				if (node == null)
+					return i - 1;
+			}
+			return i - 1;
+		}
+
+		public static string EtcKindToCaption (char etc)
+		{
+			switch (etc) {
+			case 'M':
+				return "Methods";
+			case 'P':
+				return "Properties";
+			case 'C':
+				return "Constructors";
+			case 'F':
+				return "Fields";
+			case 'E':
+				return "Events";
+			case 'O':
+				return "Operators";
+			case '*':
+				return "Members";
+			default:
+				return null;
+			}
+		}
+
+		public static string MemberKindToCaption (EcmaDesc.Kind kind)
+		{
+			switch (kind) {
+			case EcmaDesc.Kind.Method:
+				return "Methods";
+			case EcmaDesc.Kind.Property:
+				return "Properties";
+			case EcmaDesc.Kind.Constructor:
+				return "Constructors";
+			case EcmaDesc.Kind.Field:
+				return "Fields";
+			case EcmaDesc.Kind.Event:
+				return "Events";
+			case EcmaDesc.Kind.Operator:
+				return "Operators";
+			default:
+				return null;
+			}
+		}
+
+		public static Node FindNodeForCaption (IList<Node> nodes, string caption)
+		{
+			foreach (var node in nodes)
+				if (node.Caption.Equals (caption, StringComparison.OrdinalIgnoreCase))
+					return node;
+			return null;
+		}
+
+		public static int CountTypeGenericArguments (string typeDefinition, int startIndex = 0)
+		{
+			int nestedLevel = 0;
+			int count = 0;
+			bool started = false;
+
+			foreach (char c in typeDefinition.Skip (startIndex)) {
+				switch (c) {
+				case '<':
+					if (!started)
+						count = 1;
+					started = true;
+					nestedLevel++;
+					break;
+				case ',':
+					if (started && nestedLevel == 1)
+						count++;
+					break;
+				case '>':
+					nestedLevel--;
+					break;
+				}
+			}
+
+			return count;
+		}
+
 		internal static string MakeOperatorSignature (XElement member, out string memberSignature)
 		{
 			string name = (string)member.Attribute ("MemberName");
@@ -219,17 +559,15 @@ namespace Monodoc.Providers
 				var fullName = reader.GetAttribute ("FullName");
 				reader.ReadToFollowing ("AssemblyName");
 				var assemblyName = reader.ReadElementString ();
-				reader.ReadToFollowing ("summary");
-				var summary = reader.ReadInnerXml ();
-				reader.ReadToFollowing ("remarks");
-				var remarks = reader.ReadInnerXml ();
+				var summary = reader.ReadToFollowing ("summary") ? XElement.Load (reader.ReadSubtree ()) : new XElement ("summary");
+				var remarks = reader.ReadToFollowing ("remarks") ? XElement.Load (reader.ReadSubtree ()) : new XElement ("remarks");
 
 				return new XElement ("class",
 				                     new XAttribute ("name", name ?? string.Empty),
 				                     new XAttribute ("fullname", fullName ?? string.Empty),
 				                     new XAttribute ("assembly", assemblyName ?? string.Empty),
-				                     new XElement ("summary", new XCData (summary)),
-				                     new XElement ("remarks", new XCData (remarks)));
+				                     summary,
+				                     remarks);
 			}
 		}
 	}

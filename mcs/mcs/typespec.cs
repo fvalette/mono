@@ -12,6 +12,7 @@
 using System;
 using System.Collections.Generic;
 using System.Text;
+using System.Linq;
 
 #if STATIC
 using MetaType = IKVM.Reflection.Type;
@@ -97,6 +98,20 @@ namespace Mono.CSharp
 		//
 		public virtual IList<TypeSpec> Interfaces {
 			get {
+				if ((state & StateFlags.InterfacesImported) == 0) {
+					state |= StateFlags.InterfacesImported;
+
+					//
+					// Delay interfaces expansion to save memory and once all
+					// base types has been imported to avoid problems where
+					// interface references type before its base was imported
+					//
+					var imported = MemberDefinition as ImportedTypeDefinition;
+					if (imported != null && Kind != MemberKind.MissingType)
+						imported.DefineInterfaces (this);
+
+				}
+
 				return ifaces;
 			}
 			set {
@@ -389,11 +404,16 @@ namespace Mono.CSharp
 			// When resolving base class of X`1 we inflate context type A`1
 			// All this happens before we even hit IFoo resolve. Without
 			// additional expansion any inside usage of A<T> would miss IFoo
-			// interface because it comes from early inflated TypeSpec
+			// interface because it comes from early inflated A`1 definition.
 			//
 			if (inflated_instances != null) {
-				foreach (var inflated in inflated_instances) {
-					inflated.Value.AddInterface (iface);
+				//
+				// Inflate only existing instances not any new instances added
+				// during AddInterface
+				//
+				var inflated_existing = inflated_instances.Values.ToArray ();
+				foreach (var inflated in inflated_existing) {
+					inflated.AddInterface (iface);
 				}
 			}
 
@@ -630,6 +650,20 @@ namespace Mono.CSharp
 				return t == InternalType.NullLiteral || t.BuiltinType == BuiltinTypeSpec.Type.Dynamic;
 			default:
 				return true;
+			}
+		}
+
+		public static bool IsNonNullableValueType (TypeSpec t)
+		{
+			switch (t.Kind) {
+			case MemberKind.TypeParameter:
+				return ((TypeParameterSpec) t).IsValueType;
+			case MemberKind.Struct:
+				return !t.IsNullableType;
+			case MemberKind.Enum:
+				return true;
+			default:
+				return false;
 			}
 		}
 

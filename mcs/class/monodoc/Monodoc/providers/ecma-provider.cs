@@ -25,14 +25,6 @@ using Mono.Utilities;
 
 namespace Monodoc.Providers
 {
-	public enum EcmaNodeType {
-		Invalid,
-		Namespace,
-		Type,
-		Member,
-		Meta, // A node that's here to serve as a header for other node
-	}
-
 	public class EcmaProvider : Provider
 	{
 		HashSet<string> directories = new HashSet<string> ();
@@ -67,7 +59,7 @@ namespace Monodoc.Providers
 					continue;
 				}
 
-				EcmaDoc.PopulateTreeFromIndexFile (indexFilePath, tree, storage, nsSummaries, _ => resID++.ToString ());
+				EcmaDoc.PopulateTreeFromIndexFile (indexFilePath, EcmaHelpSource.EcmaPrefix, tree, storage, nsSummaries, _ => resID++.ToString ());
 			}
 
 			foreach (var summary in nsSummaries)
@@ -85,15 +77,13 @@ namespace Monodoc.Providers
 			using (var reader = XmlReader.Create (nsFile)) {
 				reader.ReadToFollowing ("Namespace");
 				var name = reader.GetAttribute ("Name");
-				reader.ReadToFollowing ("summary");
-				var summary = reader.ReadInnerXml ();
-				reader.ReadToFollowing ("remarks");
-				var remarks = reader.ReadInnerXml ();
+				var summary = reader.ReadToFollowing ("summary") ? XElement.Load (reader.ReadSubtree ()) : new XElement ("summary");
+				var remarks = reader.ReadToFollowing ("remarks") ? XElement.Load (reader.ReadSubtree ()) : new XElement ("remarks");
 
 				return new XElement ("namespace",
 				                     new XAttribute ("ns", name ?? string.Empty),
-				                     new XElement ("summary", new XCData (summary)),
-				                     new XElement ("remarks", new XCData (remarks)));
+				                     summary,
+				                     remarks);
 			}
 		}
 
@@ -161,8 +151,7 @@ namespace Monodoc.Providers
 
 	public class EcmaHelpSource : HelpSource
 	{
-		const string EcmaPrefix = "ecma:";
-		EcmaUrlParser parser = new EcmaUrlParser ();
+		internal const string EcmaPrefix = "ecma:";
 		LRUCache<string, Node> cache = new LRUCache<string, Node> (4);
 
 		public EcmaHelpSource (string base_file, bool create) : base (base_file, create)
@@ -201,7 +190,10 @@ namespace Monodoc.Providers
 		public override Stream GetHelpStream (string id)
 		{
 			var idParts = id.Split ('?');
-			return base.GetHelpStream (idParts[0]);
+			var name = idParts[0];
+			if (name == "root:")
+				name = "mastersummary.xml";
+			return base.GetHelpStream (name);
 		}
 
 		public override Stream GetCachedHelpStream (string id)
@@ -210,25 +202,15 @@ namespace Monodoc.Providers
 			return base.GetCachedHelpStream (idParts[0]);
 		}
 
-		public override DocumentType GetDocumentTypeForId (string id, out Dictionary<string, string> extraParams)
+		public override DocumentType GetDocumentTypeForId (string id)
 		{
-			extraParams = null;
-			int interMark = id.LastIndexOf ('?');
-			if (interMark != -1)
-				extraParams = id.Substring (interMark)
-					.Split ('&')
-					.Select (nvp => {
-						var eqIdx = nvp.IndexOf ('=');
-						return new { Key = nvp.Substring (0, eqIdx < 0 ? nvp.Length : eqIdx), Value = nvp.Substring (eqIdx + 1) };
-					})
-					.ToDictionary (kvp => kvp.Key, kvp => kvp.Value );
 			return DocumentType.EcmaXml;
 		}
 
 		public override string GetPublicUrl (Node node)
 		{
 			string url = string.Empty;
-			var type = GetNodeType (node);
+			var type = EcmaDoc.GetNodeType (node);
 			//Console.WriteLine ("GetPublicUrl {0} : {1} [{2}]", node.Element, node.Caption, type.ToString ());
 			switch (type) {
 			case EcmaNodeType.Namespace:
@@ -238,7 +220,7 @@ namespace Monodoc.Providers
 			case EcmaNodeType.Meta:
 				return MakeTypeNodeUrl (GetNodeTypeParent (node)) + GenerateMetaSuffix (node);
 			case EcmaNodeType.Member:
-				var typeChar = GetNodeMemberTypeChar (node);
+				var typeChar = EcmaDoc.GetNodeMemberTypeChar (node);
 				var parentNode = GetNodeTypeParent (node);
 				var typeNode = MakeTypeNodeUrl (parentNode).Substring (2);
 				return typeChar + ":" + typeNode + MakeMemberNodeUrl (typeChar, node);
@@ -289,56 +271,11 @@ namespace Monodoc.Providers
 			return "." + caption;
 		}
 
-		EcmaNodeType GetNodeType (Node node)
-		{
-			// We guess the node type by checking the depth level it's at in the tree
-			int level = GetNodeLevel (node);
-			switch (level) {
-			case 0:
-				return EcmaNodeType.Namespace;
-			case 1:
-				return EcmaNodeType.Type;
-			case 2:
-				return EcmaNodeType.Meta;
-			case 3: // Here it's either a member or, in case of overload, a meta
-				return node.IsLeaf ? EcmaNodeType.Member : EcmaNodeType.Meta;
-			case 4: // At this level, everything is necessarily a member
-				return EcmaNodeType.Member;
-			default:
-				return EcmaNodeType.Invalid;
-			}
-		}
-
-		int GetNodeLevel (Node node)
-		{
-			int i = 0;
-			for (; !node.Element.StartsWith ("root:/", StringComparison.OrdinalIgnoreCase); i++) {
-				//Console.WriteLine ("\tLevel {0} : {1} {2}", i, node.Element, node.Caption);
-				node = node.Parent;
-			}
-			return i - 1;
-		}
-
-		char GetNodeMemberTypeChar (Node node)
-		{
-			int level = GetNodeLevel (node);
-			// We try to reach the member group node depending on node nested level
-			switch (level) {
-			case 2:
-				return node.Element[0];
-			case 3:
-				return node.Parent.Element[0];
-			case 4:
-				return node.Parent.Parent.Element[0];
-			default:
-				throw new ArgumentException ("node", "Couldn't determine member type of node `" + node.Caption + "'");
-			}
-		}
-
 		Node GetNodeTypeParent (Node node)
 		{
 			// Type nodes are always at level 2 so we just need to get there
-			while (node != null && node.Parent != null && !node.Parent.Parent.Element.StartsWith ("root:/", StringComparison.OrdinalIgnoreCase))
+			while (node != null && node.Parent != null
+			       && !node.Parent.Parent.Element.StartsWith ("root:/", StringComparison.OrdinalIgnoreCase) && node.Parent.Parent.Parent != null)
 				node = node.Parent;
 			return node;
 		}
@@ -347,17 +284,18 @@ namespace Monodoc.Providers
 		{
 			string suffix = string.Empty;
 			// A meta node has always a type element to begin with
-			while (GetNodeType (node) != EcmaNodeType.Type) {
+			while (EcmaDoc.GetNodeType (node) != EcmaNodeType.Type) {
 				suffix = '/' + node.Element + suffix;
 				node = node.Parent;
 			}
 			return suffix;
 		}
 
-		public override string GetInternalIdForUrl (string url, out Node node)
+		public override string GetInternalIdForUrl (string url, out Node node, out Dictionary<string, string> context)
 		{
 			var id = string.Empty;
 			node = null;
+			context = null;
 
 			if (!url.StartsWith (UriPrefix, StringComparison.OrdinalIgnoreCase)) {
 				node = MatchNode (url);
@@ -368,8 +306,9 @@ namespace Monodoc.Providers
 
 			string hash;
 			id = GetInternalIdForInternalUrl (id, out hash);
+			context = EcmaDoc.GetContextForEcmaNode (hash, SourceID.ToString (), node);
 
-			return id + GetArgs (hash, node);
+			return id;
 		}
 
 		public string GetInternalIdForInternalUrl (string internalUrl, out string hash)
@@ -394,217 +333,17 @@ namespace Monodoc.Providers
 		{
 			Node node = null;
 			if ((node = cache.Get (url)) == null) {
-				node = InternalMatchNode (url);
+				node = EcmaDoc.MatchNodeWithEcmaUrl (url, Tree);
 				if (node != null)
 					cache.Put (url, node);
 			}
 			return node;
 		}
 
-		public Node InternalMatchNode (string url)
-		{
-			Node result = null;
-			EcmaDesc desc;
-			if (!parser.TryParse (url, out desc))
-				return null;
-
-			// Namespace search
-			Node currentNode = Tree.RootNode;
-			Node searchNode = new Node () { Caption = desc.Namespace };
-			int index = currentNode.Nodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
-			if (index >= 0)
-				result = currentNode.Nodes[index];
-			if (desc.DescKind == EcmaDesc.Kind.Namespace || index < 0)
-				return result;
-
-			// Type search
-			currentNode = result;
-			result = null;
-			searchNode.Caption = desc.ToCompleteTypeName ();
-			index = currentNode.Nodes.BinarySearch (searchNode, EcmaTypeNodeComparer.Instance);
-			if (index >= 0)
-				result = currentNode.Nodes[index];
-			if ((desc.DescKind == EcmaDesc.Kind.Type && !desc.IsEtc) || index < 0)
-				return result;
-
-			// Member selection
-			currentNode = result;
-			result = null;
-			var caption = desc.IsEtc ? EtcKindToCaption (desc.Etc) : MemberKindToCaption (desc.DescKind);
-			currentNode = FindNodeForCaption (currentNode.Nodes, caption);
-			if (currentNode == null 
-			    || (desc.IsEtc && desc.DescKind == EcmaDesc.Kind.Type && string.IsNullOrEmpty (desc.EtcFilter)))
-				return currentNode;
-
-			// Member search
-			result = null;
-			var format = desc.DescKind == EcmaDesc.Kind.Constructor ? EcmaDesc.Format.WithArgs : EcmaDesc.Format.WithoutArgs;
-			searchNode.Caption = desc.ToCompleteMemberName (format);
-			index = currentNode.Nodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
-			if (index < 0)
-				return null;
-			result = currentNode.Nodes[index];
-			if (result.Nodes.Count == 0 || desc.IsEtc)
-				return result;
-
-			// Overloads search
-			currentNode = result;
-			searchNode.Caption = desc.ToCompleteMemberName (EcmaDesc.Format.WithArgs);
-			index = currentNode.Nodes.BinarySearch (searchNode, EcmaGenericNodeComparer.Instance);
-			if (index < 0)
-				return result;
-			result = result.Nodes[index];
-			
-			return result;
-		}
-
-		// This comparer returns the answer straight from caption comparison
-		class EcmaGenericNodeComparer : IComparer<Node>
-		{
-			public static readonly EcmaGenericNodeComparer Instance = new EcmaGenericNodeComparer ();
-
-			public int Compare (Node n1, Node n2)
-			{
-				return string.Compare (n1.Caption, n2.Caption, StringComparison.Ordinal);
-			}
-		}
-
-		// This comparer take into account the space in the caption
-		class EcmaTypeNodeComparer : IComparer<Node>
-		{
-			public static readonly EcmaTypeNodeComparer Instance = new EcmaTypeNodeComparer ();
-
-			public int Compare (Node n1, Node n2)
-			{
-				int length1 = CaptionLength (n1.Caption);
-				int length2 = CaptionLength (n2.Caption);
-
-				return string.Compare (n1.Caption, 0, n2.Caption, 0, Math.Max (length1, length2), StringComparison.Ordinal);
-			}
-
-			int CaptionLength (string caption)
-			{
-				var length = caption.LastIndexOf (' ');
-				return length == -1 ? caption.Length : length;
-			}
-		}
-
-		string EtcKindToCaption (char etc)
-		{
-			switch (etc) {
-			case 'M':
-				return "Methods";
-			case 'P':
-				return "Properties";
-			case 'C':
-				return "Constructors";
-			case 'F':
-				return "Fields";
-			case 'E':
-				return "Events";
-			case 'O':
-				return "Operators";
-			case '*':
-				return "Members";
-			default:
-				return null;
-			}
-		}
-
-		string MemberKindToCaption (EcmaDesc.Kind kind)
-		{
-			switch (kind) {
-			case EcmaDesc.Kind.Method:
-				return "Methods";
-			case EcmaDesc.Kind.Property:
-				return "Properties";
-			case EcmaDesc.Kind.Constructor:
-				return "Constructors";
-			case EcmaDesc.Kind.Field:
-				return "Fields";
-			case EcmaDesc.Kind.Event:
-				return "Events";
-			case EcmaDesc.Kind.Operator:
-				return "Operators";
-			default:
-				return null;
-			}
-		}
-
-		Node FindNodeForCaption (List<Node> nodes, string caption)
-		{
-			foreach (var node in nodes)
-				if (node.Caption.Equals (caption, StringComparison.OrdinalIgnoreCase))
-					return node;
-			return null;
-		}
-
-		string GetArgs (string hash, Node node)
-		{
-			var args = new Dictionary<string, string> ();
-			
-			args["source-id"] = SourceID.ToString ();
-			
-			if (node != null) {
-				var nodeType = GetNodeType (node);
-				switch (nodeType) {
-				case EcmaNodeType.Namespace:
-					args["show"] = "namespace";
-					args["namespace"] = node.Element.Substring ("N:".Length);
-					break;
-				case EcmaNodeType.Type:
-					args["show"] = "typeoverview";
-					break;
-				case EcmaNodeType.Member:
-				case EcmaNodeType.Meta:
-					switch (GetNodeMemberTypeChar (node)){
-					case 'C':
-						args["membertype"] = "Constructor";
-						break;
-					case 'M':
-						args["membertype"] = "Method";
-						break;
-					case 'P':
-						args["membertype"] = "Property";
-						break;
-					case 'F':
-						args["membertype"] = "Field";
-						break;
-					case 'E':
-						args["membertype"] = "Event";
-						break;
-					case 'O':
-						args["membertype"] = "Operator";
-						break;
-					case 'X':
-						args["membertype"] = "ExtensionMethod";
-						break;
-					case '*':
-						args["membertype"] = "All";
-						break;
-					}
-
-					if (nodeType == EcmaNodeType.Meta) {
-						args["show"] = "members";
-						args["index"] = "all";
-					} else {
-						args["show"] = "member";
-						args["index"] = node.Element;
-					}
-					break;
-				}
-			}
-
-			if (!string.IsNullOrEmpty (hash))
-				args["hash"] = hash;
-
-			return "?" + string.Join ("&", args.Select (kvp => kvp.Key == kvp.Value ? kvp.Key : kvp.Key + '=' + kvp.Value));
-		}
-
 		public override void PopulateIndex (IndexMaker index_maker)
 		{
-			foreach (Node ns_node in Tree.RootNode.Nodes){
-				foreach (Node type_node in ns_node.Nodes){
+			foreach (Node ns_node in Tree.RootNode.ChildNodes){
+				foreach (Node type_node in ns_node.ChildNodes){
 					string typename = type_node.Caption.Substring (0, type_node.Caption.IndexOf (' '));
 					string full = ns_node.Caption + "." + typename;
 
@@ -633,7 +372,7 @@ namespace Monodoc.Providers
 						index_maker.Add (type_node.Caption, typename, url);
 						index_maker.Add (full + " " + doc_tag, full, url);
 
-						foreach (Node c in type_node.Nodes){
+						foreach (Node c in type_node.ChildNodes){
 							switch (c.Caption){
 							case "Constructors":
 								index_maker.Add ("  constructors", typename+"0", url + "/C");
@@ -662,10 +401,10 @@ namespace Monodoc.Providers
 						//
 						string keybase = typename + "6.";
 
-						foreach (Node c in type_node.Nodes){
+						foreach (Node c in type_node.ChildNodes){
 							var type = c.Caption[0];
 
-							foreach (Node nc in c.Nodes) {
+							foreach (Node nc in c.ChildNodes) {
 								string res = nc.Caption;
 								string nurl = nc.PublicUrl;
 
@@ -755,8 +494,8 @@ namespace Monodoc.Providers
 			StringBuilder text = new StringBuilder ();
 			SearchableDocument searchDoc = new SearchableDocument ();
 
-			foreach (Node ns_node in Tree.RootNode.Nodes) {
-				foreach (Node type_node in ns_node.Nodes) {
+			foreach (Node ns_node in Tree.RootNode.ChildNodes) {
+				foreach (Node type_node in ns_node.ChildNodes) {
 					string typename = type_node.Caption.Substring (0, type_node.Caption.IndexOf (' '));
 					string full = ns_node.Caption + "." + typename;
 					string url = type_node.PublicUrl;
@@ -766,10 +505,8 @@ namespace Monodoc.Providers
 					var xdoc = XDocument.Load (GetHelpStream (id));
 					if (xdoc == null)
 						continue;
-					if (string.IsNullOrEmpty (doc_tag)) {
-						Console.WriteLine (type_node.Caption);
+					if (string.IsNullOrEmpty (doc_tag))
 						continue;
-					}	
 
 					// For classes, structures or interfaces add a doc for the overview and
 					// add a doc for every constructor, method, event, ...
@@ -795,35 +532,38 @@ namespace Monodoc.Providers
 						var exportParsable = doc_tag[0] == 'C' && (ns_node.Caption.StartsWith ("MonoTouch") || ns_node.Caption.StartsWith ("MonoMac"));
 
 						//Add docs for contructors, methods, etc.
-						foreach (Node c in type_node.Nodes) { // c = Constructors || Fields || Events || Properties || Methods || Operators
+						foreach (Node c in type_node.ChildNodes) { // c = Constructors || Fields || Events || Properties || Methods || Operators
 							if (c.Element == "*")
 								continue;
 							const float innerTypeBoost = 0.2f;
 
-							IEnumerable<Node> ncnodes = c.Nodes;
+							IEnumerable<Node> ncnodes = c.ChildNodes;
 							// The rationale is that we need to properly handle method overloads
 							// so for those method node which have children, flatten them
 							if (c.Caption == "Methods") {
 								ncnodes = ncnodes
-									.Where (n => n.Nodes == null || n.Nodes.Count == 0)
-									.Concat (ncnodes.Where (n => n.Nodes.Count > 0).SelectMany (n => n.Nodes));
+									.Where (n => n.ChildNodes == null || n.ChildNodes.Count == 0)
+									.Concat (ncnodes.Where (n => n.ChildNodes.Count > 0).SelectMany (n => n.ChildNodes));
 							} else if (c.Caption == "Operators") {
 								ncnodes = ncnodes
 									.Where (n => !n.Caption.EndsWith ("Conversion"))
-									.Concat (ncnodes.Where (n => n.Caption.EndsWith ("Conversion")).SelectMany (n => n.Nodes));
+									.Concat (ncnodes.Where (n => n.Caption.EndsWith ("Conversion")).SelectMany (n => n.ChildNodes));
 							}
 
 							var prematchedMembers = xdoc.Root.Element ("Members").Elements ("Member").ToLookup (n => (string)n.Attribute ("MemberName"), n => n);
 
 							foreach (Node nc in ncnodes) {
-								var docsNode = GetDocsFromCaption (xdoc, c.Caption[0] == 'C' ? ".ctor" : nc.Caption, c.Caption[0] == 'O', prematchedMembers);
+								XElement docsNode = null;
+								try {
+									docsNode = GetDocsFromCaption (xdoc, c.Caption[0] == 'C' ? ".ctor" : nc.Caption, c.Caption[0] == 'O', prematchedMembers);
+								} catch {}
 								if (docsNode == null) {
 									Console.Error.WriteLine ("Problem: {0}", nc.PublicUrl);
 									continue;
 								}
 
 								SearchableDocument doc_nod = searchDoc.Reset ();
-								doc_nod.Title = LargeName (nc) + " " + EtcKindToCaption (c.Caption[0]);
+								doc_nod.Title = LargeName (nc) + " " + EcmaDoc.EtcKindToCaption (c.Caption[0]);
 								doc_nod.FullTitle = ns_node.Caption + '.' + typename + "::" + nc.Caption;
 								doc_nod.HotText = string.Empty;
 

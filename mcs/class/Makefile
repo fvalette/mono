@@ -127,19 +127,6 @@ net_2_0_only_dirs := \
 	System.Data.Services		\
 	System.Web.Mvc			
 
-moonlight_raw_dirs := \
-	corlib			\
-	System			\
-	Mono.CompilerServices.SymbolWriter \
-	System.Core		\
-	System.XML		\
-	System.Net		\
-	System.Xml.Linq	\
-	System.Runtime.Serialization	\
-	System.ServiceModel	\
-	System.ServiceModel.Web	\
-	System.Xml.Serialization
-
 mobile_dirs := \
 	corlib	\
 	System	\
@@ -161,19 +148,20 @@ mobile_dirs := \
 	Mono.Data.Sqlite	\
 	System.Numerics	\
 	System.Data.Services.Client \
-	System.Reactive.Interfaces \
-	System.Reactive.Core \
-	System.Reactive.Linq \
-	System.Reactive.PlatformServices \
-	System.Reactive.Experimental \
-	System.Reactive.Debugger	\
-	System.Net.Http
+	System.IO.Compression \
+	System.IO.Compression.FileSystem \
+	System.ComponentModel.DataAnnotations \
+	System.ComponentModel.Composition.4.5 \
+	System.Net \
+	System.Windows \
+	System.Xml.Serialization \
+	Facades
 
 monodroid_dirs := \
 	Mono.CompilerServices.SymbolWriter	\
 	Mono.CSharp	\
 	Microsoft.CSharp \
-	System.Reactive.Providers
+	System.Net.Http
 
 monotouch_runtime_dirs := \
 	corlib \
@@ -202,8 +190,7 @@ monotouch_runtime_dirs := \
 	System.Web \
 	Mono.Web \
 	System.Web.Services \
-	System.Web	\
-	System.Net.Http
+	System.Web
 
 net_3_5_only_dirs := \
 	Microsoft.Build.Framework	\
@@ -247,6 +234,7 @@ net_4_5_dirs := \
 	System.Threading.Tasks.Dataflow \
 	System.ComponentModel.Composition.4.5 \
 	System.Net.Http	\
+	System.Net.Http.WebRequest \
 	System.Web.Razor \
 	System.Web.WebPages.Deployment \
 	System.Web.WebPages \
@@ -255,12 +243,17 @@ net_4_5_dirs := \
 	System.Net.Http.Formatting \
 	System.Web.Http \
 	System.Web.Http.SelfHost \
+	System.Web.Http.WebHost \
 	EntityFramework	\
 	EntityFramework.SqlServer	\
-	Mono.CodeContracts
-
+	Mono.CodeContracts \
+	System.IO.Compression \
+	System.IO.Compression.FileSystem \
+	System.Windows \
+	System.Xml.Serialization \
+	Facades
+	
 net_2_0_SUBDIRS := $(common_dirs) $(net_2_0_dirs) $(net_2_0_only_dirs) aot-compiler
-moonlight_raw_SUBDIRS := $(moonlight_raw_dirs)
 monodroid_SUBDIRS := $(mobile_dirs) $(monodroid_dirs)
 monotouch_SUBDIRS := $(mobile_dirs)
 monotouch_runtime_SUBDIRS := $(monotouch_runtime_dirs)
@@ -271,7 +264,7 @@ net_4_5_SUBDIRS := $(common_dirs) $(net_2_0_dirs) $(net_4_0_dirs) $(net_4_5_dirs
 
 include ../build/rules.make
 
-SUBDIRS = $(common_dirs) $(net_2_0_dirs) $(net_2_0_only_dirs) $(net_3_5_only_dirs) $(moonlight_raw_dirs) $(mobile_dirs) $(net_4_0_dirs) $(net_4_0_only_dirs) $(net_4_5_dirs)
+SUBDIRS = $(common_dirs) $(net_2_0_dirs) $(net_2_0_only_dirs) $(net_3_5_only_dirs) $(mobile_dirs) $(net_4_0_dirs) $(net_4_0_only_dirs) $(net_4_5_dirs)
 
 DIST_ONLY_SUBDIRS = dlr aot-compiler
 

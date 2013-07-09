@@ -71,7 +71,7 @@ namespace Monodoc.Providers
 
 		public ManHelpSource (string base_file, bool create) : base (base_file, create)
 		{
-			nodesMap = Tree.RootNode.Nodes.ToDictionary (n => n.Element);
+			nodesMap = Tree.RootNode.ChildNodes.ToDictionary (n => n.Element);
 		}
 
 		// Since man always has a flat tree and rather small amount of item
@@ -82,9 +82,8 @@ namespace Monodoc.Providers
 			return nodesMap.TryGetValue (url, out result) ? result : null;
 		}
 
-		public override DocumentType GetDocumentTypeForId (string id, out Dictionary<string, string> extraParams)
+		public override DocumentType GetDocumentTypeForId (string id)
 		{
-			extraParams = null;
 			return id == "root:" ? DocumentType.TocXml : DocumentType.Man;
 		}
 

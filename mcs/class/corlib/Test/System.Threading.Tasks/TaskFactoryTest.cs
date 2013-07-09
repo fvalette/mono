@@ -28,7 +28,7 @@
 //
 //
 
-#if NET_4_0 || MOBILE
+#if NET_4_0
 
 using System;
 using System.Threading;
@@ -36,6 +36,9 @@ using System.Threading.Tasks;
 using System.Collections.Generic;
 
 using NUnit.Framework;
+#if !MOBILE
+using NUnit.Framework.SyntaxHelpers;
+#endif
 
 namespace MonoTests.System.Threading.Tasks
 {
@@ -367,16 +370,16 @@ namespace MonoTests.System.Threading.Tasks
 			Task<int> task = factory.FromAsync<int, int> (func.BeginInvoke, func.EndInvoke, 1, null);
 			var cont = task.ContinueWith (_ => continuationTest = true, TaskContinuationOptions.ExecuteSynchronously);
 			try {
-				task.Wait ();
+				task.Wait (2000);
 			} catch { }
-			cont.Wait ();
+			Assert.IsTrue (cont.Wait (2000), "#1");
 
 			Assert.IsTrue (result);
 			Assert.IsTrue (continuationTest);
 			Assert.IsNotNull (task.Exception);
 			var agg = task.Exception;
 			Assert.AreEqual (1, agg.InnerExceptions.Count);
-			Assert.IsInstanceOfType (typeof (ApplicationException), agg.InnerExceptions[0]);
+			Assert.That (agg.InnerExceptions[0], Is.TypeOf (typeof (ApplicationException)));
 			Assert.AreEqual (TaskStatus.Faulted, task.Status);
 
 			try {

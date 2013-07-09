@@ -29,10 +29,17 @@
 //
 
 #if SECURITY_DEP
+
+#if MONOTOUCH
+using Mono.Security.Protocol.Ntlm;
+#else
+extern alias MonoSecurity;
+using MonoSecurity::Mono.Security.Protocol.Ntlm;
+#endif
+
 using System;
 using System.Collections;
 using System.Net;
-using Mono.Security.Protocol.Ntlm;
 
 namespace Mono.Http
 {
@@ -92,6 +99,7 @@ namespace Mono.Http
 				Type3Message type3 = new Type3Message (type2);
 				type3.Username = userName;
 				type3.Password = password;
+				type3.Domain = domain;
 				message = type3;
 				completed = true;
 			} else {

@@ -37,33 +37,38 @@ namespace System.Reflection {
 	[Serializable]
 	[ClassInterface(ClassInterfaceType.None)]
 	[StructLayout (LayoutKind.Sequential)]
+#if MOBILE
+	public abstract class EventInfo : MemberInfo {
+#else
 	public abstract class EventInfo : MemberInfo, _EventInfo {
+#endif
 		AddEventAdapter cached_add_event;
 
 		public abstract EventAttributes Attributes {get;}
 
 		public
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0
 		virtual
 #endif
 		Type EventHandlerType {
 			get {
 				ParameterInfo[] p;
 				MethodInfo add = GetAddMethod (true);
-				p = add.GetParameters ();
+				p = add.GetParametersInternal ();
 				if (p.Length > 0) {
 					Type t = p [0].ParameterType;
 					/* is it alwasys the first arg?
 					if (!t.IsSubclassOf (typeof (System.Delegate)))
 						throw new Exception ("no delegate in event");*/
 					return t;
-				} else
-					return null;
+				}
+
+				return null;
 			}
 		}
 
 		public
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0
 		virtual
 #endif
 		bool IsMulticast {get {return true;}}
@@ -79,7 +84,7 @@ namespace System.Reflection {
 		[DebuggerHidden]
 		[DebuggerStepThrough]
 		public
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0
 		virtual
 #endif
 		void AddEventHandler (object target, Delegate handler)
@@ -127,7 +132,7 @@ namespace System.Reflection {
 
 		public virtual MethodInfo[] GetOtherMethods (bool nonPublic) {
 			// implemented by the derived class
-			return new MethodInfo [0];
+			return EmptyArray<MethodInfo>.Value;
 		}
 
 		public MethodInfo[] GetOtherMethods () {
@@ -137,7 +142,7 @@ namespace System.Reflection {
 		[DebuggerHidden]
 		[DebuggerStepThrough]
 		public
-#if NET_4_0 || MOONLIGHT
+#if NET_4_0
 		virtual
 #endif
 		void RemoveEventHandler (object target, Delegate handler)
@@ -179,9 +184,16 @@ namespace System.Reflection {
 		}
 #endif
 
+#if !MOBILE
 		void _EventInfo.GetIDsOfNames ([In] ref Guid riid, IntPtr rgszNames, uint cNames, uint lcid, IntPtr rgDispId)
 		{
 			throw new NotImplementedException ();
+		}
+
+		Type _EventInfo.GetType ()
+		{
+			// Required or object::GetType becomes virtual final
+			return base.GetType ();
 		}
 
 		void _EventInfo.GetTypeInfo (uint iTInfo, uint lcid, IntPtr ppTInfo)
@@ -198,6 +210,7 @@ namespace System.Reflection {
 		{
 			throw new NotImplementedException ();
 		}
+#endif
 
 		delegate void AddEventAdapter (object _this, Delegate dele);
 
@@ -239,11 +252,11 @@ namespace System.Reflection {
 			string frameName;
 
 			if (method.IsStatic) {
-				typeVector = new Type[] { method.GetParameters () [0].ParameterType };
+				typeVector = new Type[] { method.GetParametersInternal () [0].ParameterType };
 				addHandlerDelegateType = typeof (StaticAddEvent<>);
 				frameName = "StaticAddEventAdapterFrame";
 			} else {
-				typeVector = new Type[] { method.DeclaringType, method.GetParameters () [0].ParameterType };
+				typeVector = new Type[] { method.DeclaringType, method.GetParametersInternal () [0].ParameterType };
 				addHandlerDelegateType = typeof (AddEvent<,>);
 				frameName = "AddEventFrame";
 			}
@@ -262,6 +275,18 @@ namespace System.Reflection {
 			adapterFrame = typeof (EventInfo).GetMethod (frameName, BindingFlags.Static | BindingFlags.NonPublic);
 			adapterFrame = adapterFrame.MakeGenericMethod (typeVector);
 			return (AddEventAdapter)Delegate.CreateDelegate (typeof (AddEventAdapter), addHandlerDelegate, adapterFrame, true);
+		}
+#endif
+
+#if NET_4_5
+		public virtual MethodInfo AddMethod {
+			get { return GetAddMethod (true); }
+		}
+		public virtual MethodInfo RaiseMethod {
+			get { return GetRaiseMethod (true); }
+		}
+		public virtual MethodInfo RemoveMethod {
+			get { return GetRemoveMethod (true); }
 		}
 #endif
 	}

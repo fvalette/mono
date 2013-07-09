@@ -40,7 +40,7 @@ namespace System.Threading {
 		, IDisposable
 #endif
 	{
-#if !MOONLIGHT
+#if !MOBILE
 		private SecurityContext _sc;
 #endif
 		private LogicalCallContext _lcc;
@@ -53,7 +53,7 @@ namespace System.Threading {
 
 		internal ExecutionContext (ExecutionContext ec)
 		{
-#if !MOONLIGHT
+#if !MOBILE
 			if (ec._sc != null)
 				_sc = new SecurityContext (ec._sc);
 #endif
@@ -79,10 +79,11 @@ namespace System.Threading {
 				return null;
 
 			ExecutionContext capture = new ExecutionContext (ec);
-#if !MOONLIGHT
+#if !MOBILE
 			if (SecurityManager.SecurityEnabled)
 				capture.SecurityContext = SecurityContext.Capture ();
 #endif
+
 #if !MONOTOUCH
 			capture.LogicalCallContext = CallContext.CreateLogicalCallContext (false);
 #endif
@@ -100,8 +101,10 @@ namespace System.Threading {
 #if NET_4_0
 		public void Dispose ()
 		{
+#if !MOBILE
 			if (_sc != null)
 				_sc.Dispose ();
+#endif
 		}
 #endif
 
@@ -127,7 +130,7 @@ namespace System.Threading {
 			}
 		}
 
-#if !MOONLIGHT
+#if !MOBILE
 		internal SecurityContext SecurityContext {
 			get {
 				if (_sc == null)
@@ -137,6 +140,7 @@ namespace System.Threading {
 			set { _sc = value; }
 		}
 #endif
+
 		internal bool FlowSuppressed {
 			get { return _suppressFlow; }
 			set { _suppressFlow = value; }
@@ -160,7 +164,6 @@ namespace System.Threading {
 			ec.FlowSuppressed = false;
 		}
 
-#if !MOONLIGHT
 		[MonoTODO ("only the SecurityContext is considered")]
 		[SecurityPermission (SecurityAction.LinkDemand, Infrastructure = true)]
 		public static void Run (ExecutionContext executionContext, ContextCallback callback, object state)
@@ -170,6 +173,9 @@ namespace System.Threading {
 					"Null ExecutionContext"));
 			}
 
+#if MOBILE
+			callback (state);
+#else
 			// FIXME: supporting more than one context should be done with executionContextSwitcher
 			// and will requires a rewrite of this method
 			var callContextCallBack = new ContextCallback (new Action<object> ((ostate) => {
@@ -182,6 +188,7 @@ namespace System.Threading {
 				}
 			}));
 			SecurityContext.Run (executionContext.SecurityContext, callContextCallBack, state);
+#endif
 		}
 
 		public static AsyncFlowControl SuppressFlow ()
@@ -190,6 +197,5 @@ namespace System.Threading {
 			t.ExecutionContext.FlowSuppressed = true;
 			return new AsyncFlowControl (t, AsyncFlowControlType.Execution);
 		}
-#endif
 	}
 }
